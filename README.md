@@ -13,6 +13,7 @@ Or with a per-operation env file:
 
 ```bash
 ENV_FILE=env/.env.acceptance ./scripts/run-workflow.sh
+ENV_FILE=env/.env.acceptance-ui ./scripts/run-ui-workflow.sh
 ENV_FILE=env/.env.upgrade   ./scripts/run-upgrade-tests.sh
 ```
 
@@ -30,14 +31,16 @@ Cluster access: `KUBEADMIN_PASSWORD` + `APISERVER` in `.env`, or `OC_TOKEN` + `C
 ## Workflow
 
 ```
-.env / env/.env.acceptance / env/.env.upgrade
+.env / env/.env.acceptance / env/.env.acceptance-ui / env/.env.upgrade
       │
       ▼
-scripts/run-workflow.sh  (acceptance)
+scripts/run-workflow.sh       (acceptance)
+scripts/run-ui-workflow.sh    (UI acceptance)
 scripts/run-upgrade-tests.sh  (upgrade)
   1. create-secrets.sh     — K8s secrets from .env or Vault
   2. setup-pipelines-ci.sh — namespace, cluster secret, Tekton tasks + pipelines
   3. create-pipelinerun.sh — submits PipelineRun (acceptance)
+     create-pipelinerun-ui.sh — submits PipelineRun (UI acceptance)
      run-upgrade-tests.sh  — submits PipelineRun (upgrade)
 ```
 
@@ -120,7 +123,9 @@ All values live in `env.template` / `.env`. Key variables:
 
 ### ci-config.yaml
 
-Maps operator versions to subscription channels and git branches. When `CHANNEL` or `GIT_RELEASE_TESTS_BRANCH` are empty, they are auto-resolved:
+Maps versions to subscription channels and git branches.
+
+**OSP (`OPERATOR_VERSION`)** — `create-pipelinerun.sh` auto-resolves `CHANNEL` and `GIT_RELEASE_TESTS_BRANCH` when empty:
 
 ```yaml
 '1.23':
@@ -129,6 +134,14 @@ Maps operator versions to subscription channels and git branches. When `CHANNEL`
     revision: release-v1.23
   release-tests-ginkgo:
     revision: main
+```
+
+**OCP (cluster version)** — `create-pipelinerun-ui.sh` auto-resolves `GIT_UI_TESTS_BRANCH` from `OPENSHIFT_VERSION` (e.g. `4.22`) or `oc get clusterversion`, when empty:
+
+```yaml
+'4.22':
+  release-ui-tests:
+    revision: release-v4.22
 ```
 
 ## Secrets
@@ -171,15 +184,19 @@ release-tests-infra/
 ├── ci-config.yaml                    # Version → channel/branch mapping
 ├── env.template                      # Configuration template
 ├── env/
+│   ├── env.acceptance-ui.template    # UI test config template
 │   ├── .env.acceptance               # Acceptance test config
+│   ├── .env.acceptance-ui            # UI acceptance test config
 │   └── .env.upgrade                  # Upgrade test config
 ├── ci/
 │   ├── pipelines/
 │   │   ├── acceptance-tests.yaml     # Parallel suites → sequential pruner → evaluate
+│   │   ├── acceptance-ui-tests.yaml  # Operator install → pytest UI sanity
 │   │   ├── upgrade-tests.yaml        # Install → pre-upgrade → upgrade → post-upgrade suites
 │   │   └── destroy-cluster.yaml
 │   ├── tasks/
 │   │   ├── release-tests.yaml        # Core test runner (gauge/ginkgo)
+│   │   ├── release-ui-tests.yaml     # Playwright/pytest UI runner
 │   │   ├── provision-cluster.yaml    # AWS IPI / ARO / Flexy provisioning
 │   │   ├── destroy-cluster.yaml
 │   │   ├── configure-operator.yaml
@@ -191,11 +208,13 @@ release-tests-infra/
 │   └── cronjobs/                     # Orphan cluster cleanup
 ├── scripts/
 │   ├── run-workflow.sh               # Acceptance tests entry point
+│   ├── run-ui-workflow.sh            # UI acceptance tests entry point
 │   ├── run-upgrade-tests.sh          # Upgrade tests entry point
 │   └── hack/
 │       ├── create-secrets.sh         # Secrets from .env or Vault
 │       ├── setup-pipelines-ci.sh     # Namespace + Tekton apply
 │       ├── create-pipelinerun.sh     # Submit acceptance PipelineRun
+│       ├── create-pipelinerun-ui.sh  # Submit UI acceptance PipelineRun
 │       ├── cluster-login.sh          # Shared login helpers
 │       ├── setup-gcs-artifacts.sh    # GCS bucket + SA setup
 │       ├── cleanup-pipeline-pvcs.sh

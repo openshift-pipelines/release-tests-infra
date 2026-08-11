@@ -1,0 +1,597 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: acceptance-ui-tests
+spec:
+  params:
+  - name: INSTALLER
+    description: "Provisioning method: aws-ipi, aro, cluster-platforms, none"
+    default: cluster-platforms
+  - name: ARCH
+    description: cluster architecture
+    default: "linux/amd64"
+  - name: BASE_DOMAIN
+    default: aws.ospqa.com
+  - name: AWS_REGION
+    default: us-east-2
+  - name: AZURE_LOCATION
+    default: eastus
+  - name: OPENSHIFT_VERSION
+    default: stable
+  - name: KEEP_CLUSTER
+    default: "false"
+  - name: CLUSTER_LIFETIME
+    default: "6h"
+  - name: CATALOG_SOURCE
+    description: provide catalog-source name through which user have to subscribe operator
+    default: custom-operators
+  - name: CHANNEL
+    description: OLM subscription channel for install/uninstall tests (e.g. pipelines-1.21)
+    default: stable
+  - name: CLUSTER_NAME
+    description: "Cluster name prefix (aws-ipi) or existing cluster name (cluster-platforms)"
+    default: ""
+  - name: GIT_INFRA_URI
+    default: https://github.com/openshift-pipelines/release-tests-infra.git
+  - name: GIT_INFRA_BRANCH
+    default: main
+  - name: GIT_RELEASE_TESTS_URI
+    default: https://github.com/openshift-pipelines/release-tests.git
+  - name: GIT_RELEASE_TESTS_BRANCH
+    description: Gauge release-tests branch (e.g. release-v1.22)
+    default: ""
+  - name: GIT_RELEASE_TESTS_GINKGO_URI
+    default: https://github.com/openshift-pipelines/release-tests-ginkgo.git
+  - name: GIT_RELEASE_TESTS_GINKGO_BRANCH
+    description: Ginkgo release-tests-ginkgo branch (when TEST_FRAMEWORK=ginkgo)
+    default: ""
+  - name: GIT_UI_TESTS_URI
+    default: https://github.com/openshift-pipelines/release-ui-tests.git
+  - name: GIT_UI_TESTS_BRANCH
+    description: release-ui-tests branch (e.g. release-v4.22; auto-resolved from OCP version via ci-config.yaml)
+    default: ""
+  - name: TEST_FRAMEWORK
+    description: gauge or ginkgo (used for operator install/uninstall via release-tests)
+    default: gauge
+  - name: IMAGE
+    description: Container image for operator install/uninstall (release-tests)
+    default: quay.io/openshift-pipeline/ci:latest
+  - name: UI_IMAGE
+    description: Container image for running UI tests
+    default: quay.io/openshift-pipeline/ui-ci:latest
+  - name: INSTALL_PIPELINES_OPERATOR
+    description: Install the Openshift Pipelines operator
+    default: "true"
+  - name: SETUP_TESTING_ACCOUNTS
+    description: Create test users (consoledeveloper, etc.); default false for UI tests
+    default: "false"
+  - name: KONFLUX_INDEX_IMAGE
+    description: Konflux index image URL
+    default: ""
+  - name: OPERATOR_ENVIRONMENT
+    description: p12n operator environment (prod, stage, pre-stage)
+    default: pre-stage
+  - name: OPERATOR_VERSION
+    description: version of Openshift Pipelines operator (x.y.z)
+    default: ""
+  - name: TKN_DOWNLOAD_URL
+    description: TKN CLI download URL (tkn-linux-<arch>.tar.gz; arch substituted at runtime)
+    default: ""
+  - name: MARKERS
+    description: pytest marker expression for UI tests
+    default: sanity
+  - name: PYTEST_ARGS
+    description: Extra arguments passed to pytest
+    default: ""
+  - name: APP_TIMEOUT
+    description: Application timeout for Playwright element waits (ms)
+    default: "90000"
+  - name: CAPTURE_SCREENSHOTS
+    description: Capture Playwright screenshots on test failure
+    default: "true"
+  - name: CAPTURE_RECORDINGS
+    description: Enable Playwright video recording during tests (.webm uploaded to GCS only on failure)
+    default: "false"
+  - name: UNINSTALL_PIPELINES_OPERATOR
+    default: "false"
+    description: Uninstall the operator after UI tests
+  - name: POST_TEST_IMAGE
+    description: Image for slack post steps (multi-arch cli)
+    default: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+  - name: SEND_SLACK_NOTIFICATION
+    description: Post pipeline status to Slack (requires slack webhook secret)
+    default: "false"
+  workspaces:
+  - name: data
+    description: Per-PipelineRun PVC (git, results, gomod-cache subPaths).
+
+  tasks:
+  # --- Provision cluster (aws-ipi/aro) or skip (cluster-platforms/none) ---
+  - name: provision-cluster
+    params:
+      - name: CLUSTER_NAME
+        value: $(params.CLUSTER_NAME)
+      - name: INSTALLER
+        value: $(params.INSTALLER)
+      - name: BASE_DOMAIN
+        value: $(params.BASE_DOMAIN)
+      - name: AWS_REGION
+        value: $(params.AWS_REGION)
+      - name: AZURE_LOCATION
+        value: $(params.AZURE_LOCATION)
+      - name: OPENSHIFT_VERSION
+        value: $(params.OPENSHIFT_VERSION)
+      - name: ARCH
+        value: $(params.ARCH)
+      - name: CLUSTER_LIFETIME
+        value: $(params.CLUSTER_LIFETIME)
+    taskRef:
+      name: provision-cluster
+    timeout: 60m
+
+  # --- Clone repos ---
+  - name: clone-infra-git
+    runAfter:
+      - provision-cluster
+    params:
+      - name: URL
+        value: $(params.GIT_INFRA_URI)
+      - name: DELETE_EXISTING
+        value: "true"
+      - name: REVISION
+        value: $(params.GIT_INFRA_BRANCH)
+    taskRef:
+      resolver: cluster
+      params:
+      - name: kind
+        value: task
+      - name: name
+        value: git-clone
+      - name: namespace
+        value: openshift-pipelines
+    timeout: 10m
+    workspaces:
+    - name: output
+      workspace: data
+      subPath: infra-git
+
+  - name: clone-release-tests-git
+    runAfter:
+      - clone-infra-git
+    params:
+      - name: URL
+        value: $(params.GIT_RELEASE_TESTS_URI)
+      - name: DELETE_EXISTING
+        value: "true"
+      - name: REVISION
+        value: $(params.GIT_RELEASE_TESTS_BRANCH)
+    taskRef:
+      resolver: cluster
+      params:
+      - name: kind
+        value: task
+      - name: name
+        value: git-clone
+      - name: namespace
+        value: openshift-pipelines
+    timeout: 10m
+    when:
+      - input: $(params.TEST_FRAMEWORK)
+        operator: in
+        values: ["gauge", "Gauge", "GAUGE", ""]
+      - input: $(params.INSTALL_PIPELINES_OPERATOR)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+    - name: output
+      workspace: data
+      subPath: release-tests-git
+
+  - name: clone-release-tests-ginkgo-git
+    runAfter:
+      - clone-infra-git
+    params:
+      - name: URL
+        value: $(params.GIT_RELEASE_TESTS_GINKGO_URI)
+      - name: DELETE_EXISTING
+        value: "true"
+      - name: REVISION
+        value: $(params.GIT_RELEASE_TESTS_GINKGO_BRANCH)
+    taskRef:
+      resolver: cluster
+      params:
+      - name: kind
+        value: task
+      - name: name
+        value: git-clone
+      - name: namespace
+        value: openshift-pipelines
+    timeout: 10m
+    when:
+      - input: $(params.TEST_FRAMEWORK)
+        operator: in
+        values: ["ginkgo", "Ginkgo", "GINKGO"]
+      - input: $(params.INSTALL_PIPELINES_OPERATOR)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+    - name: output
+      workspace: data
+      subPath: release-tests-ginkgo-git
+
+  - name: clone-release-ui-tests-git
+    runAfter:
+      - clone-infra-git
+    params:
+      - name: URL
+        value: $(params.GIT_UI_TESTS_URI)
+      - name: DELETE_EXISTING
+        value: "true"
+      - name: REVISION
+        value: $(params.GIT_UI_TESTS_BRANCH)
+    taskRef:
+      resolver: cluster
+      params:
+      - name: kind
+        value: task
+      - name: name
+        value: git-clone
+      - name: namespace
+        value: openshift-pipelines
+    timeout: 10m
+    workspaces:
+    - name: output
+      workspace: data
+      subPath: release-ui-tests-git
+
+  # --- Setup ---
+  - name: setup-testing-accounts
+    params:
+      - name: CLUSTER_NAME
+        value: $(tasks.provision-cluster.results.cluster-name)
+    runAfter:
+      - clone-infra-git
+    taskRef:
+      name: setup-testing-accounts
+    when:
+      - input: $(params.SETUP_TESTING_ACCOUNTS)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+    - name: infra-git
+      workspace: data
+      subPath: infra-git
+
+  - name: go-mod-cache-gauge
+    params:
+      - name: TEST_FRAMEWORK
+        value: gauge
+      - name: IMAGE
+        value: $(params.IMAGE)
+      - name: OSP_VERSION
+        value: $(params.OPERATOR_VERSION)
+      - name: TKN_DOWNLOAD_URL
+        value: $(params.TKN_DOWNLOAD_URL)
+      - name: CLUSTER_NAME
+        value: $(tasks.provision-cluster.results.cluster-name)
+    runAfter:
+      - clone-release-tests-git
+      - setup-testing-accounts
+    taskRef:
+      name: go-mod-cache
+    when:
+      - input: $(params.TEST_FRAMEWORK)
+        operator: in
+        values: ["gauge", "Gauge", "GAUGE", ""]
+      - input: $(params.INSTALL_PIPELINES_OPERATOR)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+      - name: release-tests-git
+        workspace: data
+        subPath: release-tests-git
+      - name: release-tests-ginkgo-git
+        workspace: data
+        subPath: release-tests-ginkgo-git
+      - name: gomod-cache
+        workspace: data
+        subPath: gomod-cache
+
+  - name: go-mod-cache-ginkgo
+    params:
+      - name: TEST_FRAMEWORK
+        value: ginkgo
+      - name: IMAGE
+        value: $(params.IMAGE)
+      - name: OSP_VERSION
+        value: $(params.OPERATOR_VERSION)
+      - name: TKN_DOWNLOAD_URL
+        value: $(params.TKN_DOWNLOAD_URL)
+      - name: CLUSTER_NAME
+        value: $(tasks.provision-cluster.results.cluster-name)
+    runAfter:
+      - clone-release-tests-ginkgo-git
+      - setup-testing-accounts
+    taskRef:
+      name: go-mod-cache
+    when:
+      - input: $(params.TEST_FRAMEWORK)
+        operator: in
+        values: ["ginkgo", "Ginkgo", "GINKGO"]
+      - input: $(params.INSTALL_PIPELINES_OPERATOR)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+      - name: release-tests-git
+        workspace: data
+        subPath: release-tests-git
+      - name: release-tests-ginkgo-git
+        workspace: data
+        subPath: release-tests-ginkgo-git
+      - name: gomod-cache
+        workspace: data
+        subPath: gomod-cache
+
+  - name: generate-build-artifacts
+    params:
+      - name: CATALOG_SOURCE
+        value: $(params.CATALOG_SOURCE)
+      - name: KONFLUX_INDEX_IMAGE
+        value: $(params.KONFLUX_INDEX_IMAGE)
+      - name: OPERATOR_ENVIRONMENT
+        value: $(params.OPERATOR_ENVIRONMENT)
+    runAfter:
+      - clone-infra-git
+    taskRef:
+      name: generate-build-artifacts
+    when:
+      - input: $(params.OPERATOR_ENVIRONMENT)
+        operator: notin
+        values: ["prod"]
+      - input: $(params.CATALOG_SOURCE)
+        operator: notin
+        values: ["redhat-operators"]
+      - input: $(params.INSTALL_PIPELINES_OPERATOR)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+      - name: build-artifacts
+        workspace: data
+        subPath: build-artifacts
+
+  - name: configure-operator
+    params:
+      - name: CLUSTER_NAME
+        value: $(tasks.provision-cluster.results.cluster-name)
+      - name: CATALOG_SOURCE
+        value: $(params.CATALOG_SOURCE)
+      - name: OPERATOR_ENVIRONMENT
+        value: $(params.OPERATOR_ENVIRONMENT)
+    taskRef:
+      name: configure-operator
+    runAfter:
+      - generate-build-artifacts
+      - setup-testing-accounts
+    when:
+      - input: $(params.OPERATOR_ENVIRONMENT)
+        operator: notin
+        values: ["prod"]
+      - input: $(params.CATALOG_SOURCE)
+        operator: notin
+        values: ["redhat-operators"]
+      - input: $(params.INSTALL_PIPELINES_OPERATOR)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+      - name: build-artifacts
+        workspace: data
+        subPath: build-artifacts
+
+  # --- Install operator (release-tests task: TAGS=install) ---
+  - name: install-pipelines-operator
+    params:
+      - name: ARCH
+        value: $(params.ARCH)
+      - name: CATALOG_SOURCE
+        value: $(params.CATALOG_SOURCE)
+      - name: CHANNEL
+        value: $(params.CHANNEL)
+      - name: CLUSTER_NAME
+        value: $(tasks.provision-cluster.results.cluster-name)
+      - name: FAIL_ON_ERROR
+        value: "True"
+      - name: IMAGE
+        value: $(params.IMAGE)
+      - name: TKN_DOWNLOAD_URL
+        value: $(params.TKN_DOWNLOAD_URL)
+      - name: OSP_VERSION
+        value: $(params.OPERATOR_VERSION)
+      - name: GIT_RELEASE_TESTS_BRANCH
+        value: $(params.GIT_RELEASE_TESTS_BRANCH)
+      - name: GIT_RELEASE_TESTS_GINKGO_BRANCH
+        value: $(params.GIT_RELEASE_TESTS_GINKGO_BRANCH)
+      - name: TEST_FRAMEWORK
+        value: $(params.TEST_FRAMEWORK)
+      - name: RUN_AS
+        value: "admin"
+      - name: SPECS
+        value: "specs/olm.spec"
+      - name: TAGS
+        value: "install"
+    runAfter:
+      - setup-testing-accounts
+      - clone-release-tests-git
+      - clone-release-tests-ginkgo-git
+      - generate-build-artifacts
+      - configure-operator
+      - go-mod-cache-gauge
+      - go-mod-cache-ginkgo
+    taskRef:
+      name: release-tests
+    retries: 2
+    timeout: 1h
+    when:
+      - input: $(params.INSTALL_PIPELINES_OPERATOR)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+    - name: release-tests-git
+      workspace: data
+      subPath: release-tests-git
+    - name: release-tests-ginkgo-git
+      workspace: data
+      subPath: release-tests-ginkgo-git
+    - name: gomod-cache
+      workspace: data
+      subPath: gomod-cache
+    - name: results
+      workspace: data
+      subPath: results
+
+  # --- UI tests ---
+  - name: release-ui-tests
+    params:
+      - name: CLUSTER_NAME
+        value: $(tasks.provision-cluster.results.cluster-name)
+      - name: IMAGE
+        value: $(params.UI_IMAGE)
+      - name: MARKERS
+        value: $(params.MARKERS)
+      - name: PYTEST_ARGS
+        value: $(params.PYTEST_ARGS)
+      - name: APP_TIMEOUT
+        value: $(params.APP_TIMEOUT)
+      - name: CAPTURE_SCREENSHOTS
+        value: $(params.CAPTURE_SCREENSHOTS)
+      - name: CAPTURE_RECORDINGS
+        value: $(params.CAPTURE_RECORDINGS)
+      - name: FAIL_ON_ERROR
+        value: "true"
+    runAfter:
+      - clone-release-ui-tests-git
+      - install-pipelines-operator
+    taskRef:
+      name: release-ui-tests
+    timeout: 1h
+    workspaces:
+    - name: release-ui-tests-git
+      workspace: data
+      subPath: release-ui-tests-git
+    - name: results
+      workspace: data
+      subPath: results
+
+  - name: uninstall-pipelines-operator
+    onError: continue
+    params:
+    - name: ARCH
+      value: $(params.ARCH)
+    - name: CATALOG_SOURCE
+      value: $(params.CATALOG_SOURCE)
+    - name: CHANNEL
+      value: $(params.CHANNEL)
+    - name: CLUSTER_NAME
+      value: $(tasks.provision-cluster.results.cluster-name)
+    - name: FAIL_ON_ERROR
+      value: "True"
+    - name: IMAGE
+      value: $(params.IMAGE)
+    - name: TKN_DOWNLOAD_URL
+      value: $(params.TKN_DOWNLOAD_URL)
+    - name: OSP_VERSION
+      value: $(params.OPERATOR_VERSION)
+    - name: GIT_RELEASE_TESTS_BRANCH
+      value: $(params.GIT_RELEASE_TESTS_BRANCH)
+    - name: GIT_RELEASE_TESTS_GINKGO_BRANCH
+      value: $(params.GIT_RELEASE_TESTS_GINKGO_BRANCH)
+    - name: TEST_FRAMEWORK
+      value: $(params.TEST_FRAMEWORK)
+    - name: RUN_AS
+      value: "admin"
+    - name: SPECS
+      value: "specs/olm.spec"
+    - name: TAGS
+      value: "uninstall"
+    runAfter:
+      - release-ui-tests
+    taskRef:
+      name: release-tests
+    timeout: 30m
+    workspaces:
+    - name: release-tests-git
+      workspace: data
+      subPath: release-tests-git
+    - name: release-tests-ginkgo-git
+      workspace: data
+      subPath: release-tests-ginkgo-git
+    - name: gomod-cache
+      workspace: data
+      subPath: gomod-cache
+    - name: results
+      workspace: data
+      subPath: results
+    when:
+      - input: $(params.UNINSTALL_PIPELINES_OPERATOR)
+        operator: in
+        values: ["true", "True"]
+
+  - name: send-slack-notification
+    params:
+      - name: IMAGE
+        value: $(params.POST_TEST_IMAGE)
+      - name: ENABLED
+        value: $(params.SEND_SLACK_NOTIFICATION)
+      - name: MESSAGE
+        value: |
+          <icon> UI pipeline run <pr_name> *<run_status>* <icon> <<logs_url>|logs> <failed_suites>
+    runAfter:
+      - release-ui-tests
+      - uninstall-pipelines-operator
+    taskRef:
+      name: send-slack-notification
+    when:
+      - input: $(params.SEND_SLACK_NOTIFICATION)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+      - name: results
+        workspace: data
+        subPath: results
+
+  finally:
+    - name: upload-artifacts-gcs
+      onError: continue
+      timeout: 10m
+      params:
+        - name: PIPELINE_RUN_NAME
+          value: $(context.pipelineRun.name)
+        - name: OPERATOR_VERSION
+          value: $(params.OPERATOR_VERSION)
+      taskRef:
+        name: upload-artifacts-gcs
+      workspaces:
+        - name: results
+          workspace: data
+          subPath: results
+
+    - name: destroy-cluster
+      onError: continue
+      timeout: 30m
+      params:
+        - name: CLUSTER_NAME
+          value: $(tasks.provision-cluster.results.cluster-name)
+        - name: KEEP_CLUSTER
+          value: $(params.KEEP_CLUSTER)
+      taskRef:
+        name: destroy-cluster
+
+    - name: cleanup-pipelinerun
+      onError: continue
+      timeout: 10m
+      params:
+        - name: PIPELINE_RUN
+          value: $(context.pipelineRun.name)
+        - name: DELETE_DELAY
+          value: "300"
+      taskRef:
+        name: cleanup-pipelinerun

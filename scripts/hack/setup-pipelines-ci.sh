@@ -26,7 +26,7 @@ Usage: $0 [--cluster-secret-only] [--force]
   INSTALLER=cluster-platforms → cluster-ca-cert, OC_TOKEN in secret
   INSTALLER=none            → skips update if secret already has installer=cluster-platforms
 
-  INSTALL_PIPELINES_OPERATOR=true runs operator install before Tekton apply (default from .env)
+  INSTALL_PIPELINES_OPERATOR=true runs operator install + verify before Tekton apply (default from .env)
 EOF
       exit 0 ;;
     *) echo "ERROR: unknown arg: $1" >&2; exit 1 ;;
@@ -204,5 +204,7 @@ fi
 echo "=== Setup complete ==="
 echo "Run acceptance tests:"
 echo "  ./scripts/hack/create-pipelinerun.sh"
+echo "Run UI acceptance tests:"
+echo "  ENV_FILE=env/.env.acceptance-ui ./scripts/run-ui-workflow.sh"
 echo "Run upgrade tests (INSTALLER=aws-ipi):"
 echo "  ./scripts/run-upgrade-tests.sh"

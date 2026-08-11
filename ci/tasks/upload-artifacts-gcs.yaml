@@ -56,7 +56,7 @@ spec:
         ARTIFACTS_URL="https://storage.googleapis.com/${GCS_BUCKET}/${UPLOAD_PREFIX}/index.html"
 
         has_artifacts=false
-        for pattern in "*.result" "*.xml" "*.log" "*.html"; do
+        for pattern in "*.result" "*.xml" "*.log" "*.html" "*.png" "*.webm"; do
           if compgen -G "${RESULTS_DIR}/${pattern}" >/dev/null 2>&1; then
             has_artifacts=true
             break
@@ -115,9 +115,16 @@ spec:
         total_pass=0
         total_fail=0
         failed_suites=""
-        for f in "${RESULTS_DIR}"/*.result "${RESULTS_DIR}"/*.xml "${RESULTS_DIR}"/*.log "${RESULTS_DIR}"/*.html; do
+        for f in "${RESULTS_DIR}"/*.result "${RESULTS_DIR}"/*.xml "${RESULTS_DIR}"/*.log "${RESULTS_DIR}"/*.html "${RESULTS_DIR}"/*.png "${RESULTS_DIR}"/*.webm; do
           [[ -f "$f" ]] || continue
-          gcs_upload "$f" "$(basename "$f")"
+          case "$(basename "$f")" in
+            *.png)  content_type="image/png" ;;
+            *.webm) content_type="video/webm" ;;
+            *.html) content_type="text/html" ;;
+            *.xml)  content_type="application/xml" ;;
+            *)      content_type="application/octet-stream" ;;
+          esac
+          gcs_upload "$f" "$(basename "$f")" "$content_type"
           echo "  uploaded: $(basename "$f") ($(du -h "$f" | cut -f1))"
           count=$((count + 1))
           if [[ "$(basename "$f")" == *.result ]]; then
@@ -211,6 +218,17 @@ spec:
           icon="📄"
           [[ "$fname" == *.xml ]] && icon="📊"
           [[ "$fname" == *.log ]] && icon="📋"
+          echo "<li><a href=\"${fname}\">${icon} ${fname}</a> <span class=\"size\">${size}</span></li>" >> "$INDEX_FILE"
+        done
+        echo "</ul>" >> "$INDEX_FILE"
+
+        echo '<h2>Screenshots and Recordings</h2><ul>' >> "$INDEX_FILE"
+        for f in "${RESULTS_DIR}"/*.png "${RESULTS_DIR}"/*.webm; do
+          [[ -f "$f" ]] || continue
+          fname=$(basename "$f")
+          size=$(du -h "$f" | cut -f1)
+          icon="🖼"
+          [[ "$fname" == *.webm ]] && icon="🎬"
           echo "<li><a href=\"${fname}\">${icon} ${fname}</a> <span class=\"size\">${size}</span></li>" >> "$INDEX_FILE"
         done
         echo "</ul>" >> "$INDEX_FILE"

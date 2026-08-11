@@ -27,6 +27,7 @@ Each operation uses a separate env file. NEVER use `.env` directly — always us
 | Operation | Env file | Script |
 |-----------|----------|--------|
 | **Acceptance** | `env/.env.acceptance` | `ENV_FILE=env/.env.acceptance ./scripts/run-workflow.sh` |
+| **UI acceptance** | `env/.env.acceptance-ui` | `ENV_FILE=env/.env.acceptance-ui ./scripts/run-ui-workflow.sh` |
 | **Upgrade** | `env/.env.upgrade` | `ENV_FILE=env/.env.upgrade ./scripts/run-upgrade-tests.sh` |
 
 ---
@@ -96,6 +97,40 @@ After the user provides values:
 
 ```bash
 ENV_FILE=env/.env.acceptance ./scripts/run-workflow.sh
+```
+
+---
+
+## UI acceptance tests flow
+
+### Step 1: Read and validate
+
+Copy template if needed: `cp env/env.acceptance-ui.template env/.env.acceptance-ui`
+
+Required fields (same cluster/operator as acceptance, plus UI-specific):
+
+| # | Field | Default / notes |
+|---|-------|-----------------|
+| 1 | `CLUSTER_NAME` | Free text |
+| 2 | `OPERATOR_VERSION` | e.g. 1.23.0 |
+| 3 | `OPERATOR_ENVIRONMENT` | `pre-stage` (needs `KONFLUX_INDEX_IMAGE`) |
+| 4 | `MARKERS` | `sanity` |
+| 5 | `GIT_UI_TESTS_BRANCH` | Auto from OCP version via `ci-config.yaml` (or set explicitly) |
+
+Optional: `APP_TIMEOUT` (default `90000`), `CAPTURE_SCREENSHOTS` (default `true`), `CAPTURE_RECORDINGS` (default `false`), `SETUP_TESTING_ACCOUNTS=false`, `UI_IMAGE=quay.io/openshift-pipeline/ui-ci:latest`
+
+### Step 2: Run
+
+Same provisioning model as acceptance (`run-workflow.sh`): `APISERVER` is the **management** cluster (Tekton host). Set `INSTALLER=aws-ipi` or `aro` to let the pipeline provision the **test** cluster; use `none` / `cluster-platforms` with an existing test cluster.
+
+```bash
+ENV_FILE=env/.env.acceptance-ui ./scripts/run-ui-workflow.sh
+```
+
+Or PipelineRun only (after setup):
+
+```bash
+ENV_FILE=env/.env.acceptance-ui ./scripts/hack/create-pipelinerun-ui.sh
 ```
 
 ### Step 5: Monitor and analyze
@@ -273,4 +308,4 @@ Then restart the IDE. The script auto-detects the active cluster and writes `.cl
 
 ## Auto-resolution
 
-`ci-config.yaml` maps OPERATOR_VERSION to CHANNEL and GIT_RELEASE_TESTS_BRANCH automatically. Do not set these unless the user explicitly asks to override them.
+`ci-config.yaml` maps `OPERATOR_VERSION` to `CHANNEL` and `GIT_RELEASE_TESTS_BRANCH` automatically. For UI runs, `GIT_UI_TESTS_BRANCH` is resolved from OCP version (`OPENSHIFT_VERSION` or `oc get clusterversion`). Do not set these unless the user explicitly asks to override them.

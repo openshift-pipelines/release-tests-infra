@@ -1,0 +1,171 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: release-ui-tests
+spec:
+  workspaces:
+    - name: release-ui-tests-git
+    - name: results
+  params:
+  - name: CLUSTER_NAME
+  - name: FAIL_ON_ERROR
+    default: "true"
+  - name: IMAGE
+    description: Container image for running UI tests (Playwright + pytest)
+    default: quay.io/openshift-pipeline/ui-ci:latest
+  - name: MARKERS
+    description: pytest marker expression (e.g. sanity, smoke)
+    default: sanity
+  - name: PYTEST_ARGS
+    description: Extra arguments passed to pytest
+    default: ""
+  - name: APP_TIMEOUT
+    description: Application timeout for element waits (ms)
+    default: "90000"
+  - name: CAPTURE_SCREENSHOTS
+    description: Capture Playwright screenshots on failure
+    default: "true"
+  - name: CAPTURE_RECORDINGS
+    description: Enable Playwright video recording during tests (.webm uploaded to GCS only on failure)
+    default: "false"
+  steps:
+    - name: run
+      image: $(params.IMAGE)
+      workingDir: $(workspaces.release-ui-tests-git.path)
+      env:
+        - name: ADMIN_NAME
+          valueFrom:
+            secretKeyRef:
+              key: admin-name
+              name: cluster-$(params.CLUSTER_NAME)
+              optional: true
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              key: kubeadmin-password
+              name: cluster-$(params.CLUSTER_NAME)
+              optional: true
+        - name: ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              key: admin-token
+              name: cluster-$(params.CLUSTER_NAME)
+              optional: true
+        - name: APISERVER
+          valueFrom:
+            secretKeyRef:
+              key: api-url
+              name: cluster-$(params.CLUSTER_NAME)
+        - name: TASKRUN_NAME
+          value: $(context.taskRun.name)
+        - name: TASKRUN_NAMESPACE
+          value: $(context.taskRun.namespace)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        RESULTS_DIR="$(workspaces.results.path)"
+        ARTIFACTS_DIR="${RESULTS_DIR}/ui-artifacts"
+        mkdir -p "$ARTIFACTS_DIR"
+
+        taskRunName="${TASKRUN_NAME}"
+        status=fail
+
+        save_results() {
+          echo "${taskRunName}: ${status}" > "${RESULTS_DIR}/${taskRunName}.result"
+          # Framework writes under ARTIFACTS_DIR/screenshots/*.png and ARTIFACTS_DIR/recordings/*.webm
+          # Flatten into results root so upload-artifacts-gcs picks up *.png / *.webm
+          if [[ -d "$ARTIFACTS_DIR" ]]; then
+            upload_webm=false
+            if [[ "$status" == "fail" ]]; then
+              upload_webm=true
+            fi
+            while IFS= read -r -d '' f; do
+              [[ -f "$f" ]] || continue
+              if [[ "$f" == *.webm ]] && [[ "$upload_webm" != true ]]; then
+                continue
+              fi
+              base="$(basename "$f")"
+              dest="${RESULTS_DIR}/${base}"
+              if [[ -e "$dest" ]]; then
+                parent="$(basename "$(dirname "$f")")"
+                dest="${RESULTS_DIR}/${parent}-${base}"
+              fi
+              cp -f "$f" "$dest"
+            done < <(find "$ARTIFACTS_DIR" -type f \( -iname '*.png' -o -iname '*.webm' \) -print0 2>/dev/null)
+            if [[ "$upload_webm" != true ]]; then
+              echo "Tests passed — skipping recording upload (screenshots only if present)"
+            fi
+          fi
+        }
+        trap 'save_results' EXIT
+
+        resolved=$(oc get taskrun "${TASKRUN_NAME}" -n "${TASKRUN_NAMESPACE}" \
+          -o json 2>/dev/null | jq -r '.metadata.labels["tekton.dev/pipelineTask"] // empty' || true)
+        [[ -n "$resolved" ]] && taskRunName="$resolved"
+        echo "Resolved pipelineTask name: ${taskRunName}"
+
+        [[ -n "${APISERVER:-}" ]] || { echo "ERROR: APISERVER missing from cluster-$(params.CLUSTER_NAME) secret"; exit 1; }
+
+        ADMIN_NAME=${ADMIN_NAME:-kubeadmin}
+        if [[ -n "${ADMIN_PASSWORD:-}" ]]; then
+          echo "Logging in to cluster $(params.CLUSTER_NAME) as '${ADMIN_NAME}'"
+          oc login -u "$ADMIN_NAME" -p "$ADMIN_PASSWORD" "$APISERVER" --insecure-skip-tls-verify=true
+        elif [[ -n "${ADMIN_TOKEN:-}" ]]; then
+          echo "Logging in to cluster $(params.CLUSTER_NAME) with token"
+          oc login --token="$ADMIN_TOKEN" "$APISERVER" --insecure-skip-tls-verify=true
+        else
+          echo "ERROR: no credentials — set kubeadmin-password or admin-token in cluster secret"
+          exit 1
+        fi
+
+        export CONSOLE_URL
+        CONSOLE_URL="$(oc whoami --show-console)"
+        export CONSOLE_USERNAME="${ADMIN_NAME}"
+        export CONSOLE_PASSWORD="${ADMIN_PASSWORD:-}"
+        export APP_TIMEOUT="$(params.APP_TIMEOUT)"
+        export CAPTURE_SCREENSHOTS="$(params.CAPTURE_SCREENSHOTS)"
+        export CAPTURE_RECORDINGS="$(params.CAPTURE_RECORDINGS)"
+        export ARTIFACTS_DIR
+
+        echo "CONSOLE_URL=${CONSOLE_URL}"
+        echo "CONSOLE_USERNAME=${CONSOLE_USERNAME}"
+        echo "ARTIFACTS_DIR=${ARTIFACTS_DIR}"
+        echo "Markers: $(params.MARKERS)"
+
+        [[ -d tests ]] || { echo "ERROR: release-ui-tests repo not ready (missing tests/)"; ls -la; exit 1; }
+
+        LOG_FILE="${RESULTS_DIR}/${taskRunName}.log"
+        {
+          echo "=== release-ui-tests ==="
+          echo "Started: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "pipelineTask: ${taskRunName}"
+          echo "markers: $(params.MARKERS)"
+          echo "CONSOLE_URL: ${CONSOLE_URL}"
+          echo "Command: pytest -m $(params.MARKERS) $(params.PYTEST_ARGS)"
+          echo "---"
+        } > "$LOG_FILE"
+
+        set +e
+        # shellcheck disable=SC2086
+        pytest -m "$(params.MARKERS)" $(params.PYTEST_ARGS) \
+          --junitxml="${RESULTS_DIR}/${taskRunName}.xml" \
+          2>&1 | tee -a "$LOG_FILE"
+        exit_code=${PIPESTATUS[0]}
+        set -e
+
+        {
+          echo "---"
+          echo "Finished: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "pytest exit code: ${exit_code}"
+        } >> "$LOG_FILE"
+
+        if [[ $exit_code -eq 0 ]]; then
+          status=pass
+        else
+          status=fail
+          echo "pytest exited with code ${exit_code} (see ${LOG_FILE})"
+          if [[ "$(params.FAIL_ON_ERROR)" == "true" || "$(params.FAIL_ON_ERROR)" == "True" ]]; then
+            exit "$exit_code"
+          fi
+        fi
