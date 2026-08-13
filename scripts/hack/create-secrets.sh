@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# K8s secrets from .env (CRED_SOURCE=local) or Vault (CRED_SOURCE=vault / --vault-login).
+# K8s secrets from env/.env (CRED_SOURCE=local) or Vault (CRED_SOURCE=vault / --vault-login).
 [[ -z "${BASH_VERSION:-}" ]] && exec /usr/bin/env bash "$0" "$@"
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SECRETS_DIR="$REPO_ROOT/secrets"
-ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
+ENV_FILE="${ENV_FILE:-$REPO_ROOT/env/.env}"
 NAMESPACE="${NAMESPACE:-pipelines-ci}"
 FORCE_VAULT_LOGIN=false
 
@@ -15,7 +15,7 @@ while [[ $# -gt 0 ]]; do
     --vault-login) FORCE_VAULT_LOGIN=true; CRED_SOURCE=vault; shift ;;
     -h|--help)
       echo "Usage: $0 [--vault-login]"
-      echo "  local:  CRED_SOURCE=local — secrets from non-empty .env vars"
+      echo "  local:  CRED_SOURCE=local — secrets from non-empty env/.env vars"
       echo "  vault:  CRED_SOURCE=vault or --vault-login — OIDC login + Vault KV"
       exit 0 ;;
     *) echo "ERROR: unknown arg: $1 (try --help)" >&2; exit 1 ;;
@@ -97,7 +97,7 @@ for key, val in sorted(data.items()):
 PY
 }
 
-[[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE (cp env.template .env)"
+[[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE (cp env/env.template env/.env)"
 set -a; source "$ENV_FILE"; set +a
 [[ "$FORCE_VAULT_LOGIN" == true ]] && CRED_SOURCE=vault
 
@@ -179,11 +179,11 @@ need UPLOADER_USERNAME UPLOADER_PASSWORD UPLOADER_HOST && apply_secret sed \
   -e "s|\$UPLOADER_USERNAME|${UPLOADER_USERNAME}|" -e "s|\$UPLOADER_PASSWORD|${UPLOADER_PASSWORD}|" \
   -e "s|\$UPLOADER_HOST|${UPLOADER_HOST}|" "$SECRETS_DIR/uploader.yaml"
 
-# GCS artifact storage — pulls SA key from Vault (GCS-TOKEN) or env var
+# GCS artifact storage — pulls SA key from env/.env (GCS_SA_KEY_JSON) or Vault (GCS-TOKEN)
 _gcs_json=""
 if [[ -n "${GCS_SA_KEY_JSON:-}" ]]; then
   _gcs_json="$GCS_SA_KEY_JSON"
-elif [[ "$CRED_SOURCE" == vault ]] && command -v vault &>/dev/null && [[ -n "${VAULT_TOKEN:-}" ]]; then
+elif command -v vault &>/dev/null && [[ -n "${VAULT_TOKEN:-}" ]]; then
   _gcs_json=$(vault kv get -format=json "${VAULT_KV_MOUNT:-kv}/${VAULT_KV_PATH:-selfservice/openshift-pipelines/osp-ci-secrets}" \
     2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['data'].get('GCS-TOKEN',''))" 2>/dev/null) || true
 fi
@@ -204,13 +204,13 @@ else
     echo "  gcs-artifacts secret already exists"
   else
     echo "  WARNING: GCS-TOKEN not found in Vault and GCS_SA_KEY_JSON not set"
-    echo "  Add the GCS SA key JSON as GCS-TOKEN in Vault: ${VAULT_KV_MOUNT:-kv}/${VAULT_KV_PATH}"
+    echo "  Add the GCS SA key JSON as GCS-TOKEN in Vault: ${VAULT_KV_MOUNT:-kv}/${VAULT_KV_PATH:-selfservice/openshift-pipelines/osp-ci-secrets}"
   fi
 fi
 
 # AWS IPI provisioning secrets (INSTALLER=aws-ipi)
 if [[ "$(printf '%s' "${INSTALLER:-none}" | tr '[:upper:]' '[:lower:]')" == aws-ipi ]]; then
-  need AWS_ACCESS_KEY AWS_ACCESS_SECRET || die "INSTALLER=aws-ipi requires AWS_ACCESS_KEY + AWS_ACCESS_SECRET (set in .env or Vault)"
+  need AWS_ACCESS_KEY AWS_ACCESS_SECRET || die "INSTALLER=aws-ipi requires AWS_ACCESS_KEY + AWS_ACCESS_SECRET (set in env/.env or Vault)"
 
   echo "Creating aws-creds secret for INSTALLER=aws-ipi..."
   oc create secret generic aws-creds \
@@ -222,24 +222,24 @@ if [[ "$(printf '%s' "${INSTALLER:-none}" | tr '[:upper:]' '[:lower:]')" == aws-
   # Pull secret: .env → management cluster's openshift-config/pull-secret
   _PULL="${PULL_SECRET:-}"
   if [[ -z "$_PULL" ]]; then
-    echo "  PULL_SECRET not in .env — extracting from cluster openshift-config/pull-secret..."
+    echo "  PULL_SECRET not in env/.env — extracting from cluster openshift-config/pull-secret..."
     _PULL=$(oc get secret pull-secret -n openshift-config \
       -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null | base64 -d) || true
   fi
-  [[ -n "$_PULL" ]] || die "PULL_SECRET required: set in .env or ensure openshift-config/pull-secret exists on management cluster"
+  [[ -n "$_PULL" ]] || die "PULL_SECRET required: set in env/.env or ensure openshift-config/pull-secret exists on management cluster"
 
-  # SSH public key: .env → Vault ssh-publickey
+  # SSH public key: env/.env → Vault ssh-publickey
   _SSH="${SSH_PUBLIC_KEY:-}"
   if [[ -z "$_SSH" ]] && [[ -n "${ssh_publickey:-}" ]]; then
     _SSH="$ssh_publickey"
   fi
   # Vault stores it as ssh-publickey (with hyphen); try the env var that vault_sync would set
   if [[ -z "$_SSH" ]] && command -v vault &>/dev/null && [[ -n "${VAULT_TOKEN:-}" ]]; then
-    echo "  SSH_PUBLIC_KEY not in .env — extracting from Vault ssh-publickey..."
+    echo "  SSH_PUBLIC_KEY not in env/.env — extracting from Vault ssh-publickey..."
     _SSH=$(vault kv get -format=json "${VAULT_KV_MOUNT:-kv}/${VAULT_KV_PATH:-selfservice/openshift-pipelines/osp-ci-secrets}" \
       2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['data']['ssh-publickey'])" 2>/dev/null) || true
   fi
-  [[ -n "$_SSH" ]] || die "SSH_PUBLIC_KEY required: set in .env or store ssh-publickey in Vault"
+  [[ -n "$_SSH" ]] || die "SSH_PUBLIC_KEY required: set in env/.env or store ssh-publickey in Vault"
 
   echo "Creating aws-install-config secret (pull-secret: ${#_PULL} chars, ssh-key: ${#_SSH} chars)..."
   oc create secret generic aws-install-config \
@@ -257,7 +257,7 @@ if [[ "$(printf '%s' "${INSTALLER:-none}" | tr '[:upper:]' '[:lower:]')" == aro 
   _AZ_PASS="${AZURE_PASSWORD:-}"
 
   if [[ -z "$_AZ_TENANT" || -z "$_AZ_USER" || -z "$_AZ_PASS" ]] && command -v vault &>/dev/null && [[ -n "${VAULT_TOKEN:-}" ]]; then
-    echo "Azure creds not in .env — extracting from Vault..."
+    echo "Azure creds not in env/.env — extracting from Vault..."
     _vault_json=$(vault kv get -format=json "${VAULT_KV_MOUNT:-kv}/${VAULT_KV_PATH:-selfservice/openshift-pipelines/osp-ci-secrets}" 2>/dev/null || true)
     if [[ -n "$_vault_json" ]]; then
       [[ -z "$_AZ_TENANT" ]] && _AZ_TENANT=$(echo "$_vault_json" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['data'].get('AZURE_TENANT',''))" 2>/dev/null || true)
@@ -266,7 +266,7 @@ if [[ "$(printf '%s' "${INSTALLER:-none}" | tr '[:upper:]' '[:lower:]')" == aro 
     fi
   fi
   [[ -n "$_AZ_TENANT" && -n "$_AZ_USER" && -n "$_AZ_PASS" ]] \
-    || die "INSTALLER=aro requires AZURE_TENANT, AZURE_USERNAME, AZURE_PASSWORD (set in .env or Vault)"
+    || die "INSTALLER=aro requires AZURE_TENANT, AZURE_USERNAME, AZURE_PASSWORD (set in env/.env or Vault)"
 
   echo "Creating azure-creds secret..."
   oc create secret generic azure-creds \
@@ -279,7 +279,7 @@ if [[ "$(printf '%s' "${INSTALLER:-none}" | tr '[:upper:]' '[:lower:]')" == aro 
   # Pull secret for ARO (reuses same logic as aws-ipi)
   _PULL="${PULL_SECRET:-}"
   if [[ -z "$_PULL" ]]; then
-    echo "  PULL_SECRET not in .env — extracting from cluster openshift-config/pull-secret..."
+    echo "  PULL_SECRET not in env/.env — extracting from cluster openshift-config/pull-secret..."
     _PULL=$(oc get secret pull-secret -n openshift-config \
       -o jsonpath='{.data.\.dockerconfigjson}' 2>/dev/null | base64 -d) || true
   fi
@@ -376,5 +376,5 @@ PYEOF
 fi
 
 [[ "$CREATED" -eq 0 ]] \
-  && echo "No secrets created. Set CRED_SOURCE=local with secret vars in .env, or CRED_SOURCE=vault." \
+  && echo "No secrets created. Set CRED_SOURCE=local with secret vars in env/.env, or CRED_SOURCE=vault." \
   || echo "Created/updated $CREATED secret(s) in $NAMESPACE"

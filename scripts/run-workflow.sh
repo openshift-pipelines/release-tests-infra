@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HACK_DIR="$SCRIPT_DIR/hack"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-[[ -f "$REPO_ROOT/.env" ]] || { echo "ERROR: .env not found (cp env.template .env)" >&2; exit 1; }
-set -a; source "$REPO_ROOT/.env"; set +a
+[[ -f "$REPO_ROOT/env/.env" ]] || { echo "ERROR: env/.env not found (cp env/env.template env/.env)" >&2; exit 1; }
+set -a; source "$REPO_ROOT/env/.env"; set +a
 
 # shellcheck source=hack/cluster-login.sh
 source "$HACK_DIR/cluster-login.sh"

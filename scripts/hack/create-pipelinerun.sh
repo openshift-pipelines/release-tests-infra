@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Create an acceptance-tests PipelineRun from .env
+# Create an acceptance-tests PipelineRun from env/.env
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
+ENV_FILE="${ENV_FILE:-$REPO_ROOT/env/.env}"
 export ENV_FILE
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-# Read a single key from .env (ignores shell exports — file is source of truth for post-test flags).
+# Read a single key from env/.env (ignores shell exports — file is source of truth for post-test flags).
 env_file_get() {
   local key=$1 file=$2 line val
   [[ -f "$file" ]] || return 1
@@ -33,7 +33,7 @@ is_enabled() {
   [[ "$(normalize_bool "${1:-false}")" == true ]]
 }
 
-# Post-test flags always come from .env, never from a stale shell export.
+# Post-test flags always come from env/.env, never from a stale shell export.
 load_post_test_flags() {
   SEND_SLACK_NOTIFICATION=$(normalize_bool "$(env_file_get SEND_SLACK_NOTIFICATION "$ENV_FILE")")
   INSTALL_PIPELINES_OPERATOR=$(normalize_bool "$(env_file_get INSTALL_PIPELINES_OPERATOR "$ENV_FILE")")
@@ -41,8 +41,8 @@ load_post_test_flags() {
   export SEND_SLACK_NOTIFICATION INSTALL_PIPELINES_OPERATOR UNINSTALL_PIPELINES_OPERATOR
 }
 
-# Preserve vars set on the command line before .env is sourced (e.g. TEST_SUITES=foo ./script).
-# Post-test flags (SEND_SLACK_NOTIFICATION, INSTALL_PIPELINES_OPERATOR) are read from .env only.
+# Preserve vars set on the command line before env/.env is sourced (e.g. TEST_SUITES=foo ./script).
+# Post-test flags (SEND_SLACK_NOTIFICATION, INSTALL_PIPELINES_OPERATOR) are read from env/.env only.
 _SAVED_TEST_SUITES="" _SAVED_TAGS="" _HAS_TEST_SUITES="" _HAS_TAGS=""
 _save_cli_overrides() {
   if [[ -n "${TEST_SUITES+x}" ]]; then _SAVED_TEST_SUITES="$TEST_SUITES"; _HAS_TEST_SUITES=1; fi
@@ -54,7 +54,7 @@ _restore_cli_overrides() {
 }
 
 load_env() {
-  [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE (cp env.template .env)"
+  [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE (cp env/env.template env/.env)"
   _save_cli_overrides
   set -a; source "$ENV_FILE"; set +a
   _restore_cli_overrides
@@ -100,7 +100,7 @@ print(v, end='')
 }
 
 resolve_from_ci_config() {
-  [[ -n "${OPERATOR_VERSION:-}" ]] || die "OPERATOR_VERSION required in .env"
+  [[ -n "${OPERATOR_VERSION:-}" ]] || die "OPERATOR_VERSION required in env/.env"
   local ver="${OPERATOR_VERSION%.*}"
 
   if [[ -z "${CHANNEL:-}" || "${CHANNEL}" == latest ]]; then
@@ -192,8 +192,12 @@ spec:
       value: "${CHANNEL}"
     - name: CLUSTER_NAME
       value: "${CLUSTER_NAME}"
+    - name: GIT_RELEASE_TESTS_URI
+      value: "${GIT_RELEASE_TESTS_URI:-https://github.com/openshift-pipelines/release-tests.git}"
     - name: GIT_RELEASE_TESTS_BRANCH
       value: "${GIT_RELEASE_TESTS_BRANCH:-}"
+    - name: GIT_RELEASE_TESTS_GINKGO_URI
+      value: "${GIT_RELEASE_TESTS_GINKGO_URI:-https://github.com/openshift-pipelines/release-tests-ginkgo.git}"
     - name: GIT_RELEASE_TESTS_GINKGO_BRANCH
       value: "${GIT_RELEASE_TESTS_GINKGO_BRANCH:-}"
     - name: TEST_FRAMEWORK
@@ -245,7 +249,7 @@ preflight() {
   FW="$(printf '%s' "${TEST_FRAMEWORK:-gauge}" | tr '[:upper:]' '[:lower:]')"
 
   for v in CLUSTER_NAME OPERATOR_VERSION; do
-    [[ -n "${!v:-}" ]] || die "$v required in .env"
+    [[ -n "${!v:-}" ]] || die "$v required in env/.env"
   done
 
   case "$FW" in gauge|ginkgo) ;; *) die "TEST_FRAMEWORK must be gauge or ginkgo (got: ${TEST_FRAMEWORK})" ;; esac
@@ -282,9 +286,9 @@ parse_test_suites
 resolve_from_ci_config
 
 [[ "$FW" != ginkgo || -n "${GIT_RELEASE_TESTS_GINKGO_BRANCH:-}" ]] \
-  || die "GIT_RELEASE_TESTS_GINKGO_BRANCH required for ginkgo (set in .env or add to ci-config.yaml)"
+  || die "GIT_RELEASE_TESTS_GINKGO_BRANCH required for ginkgo (set in env/.env or add to ci-config.yaml)"
 [[ "$FW" != gauge || -n "${GIT_RELEASE_TESTS_BRANCH:-}" ]] \
-  || die "GIT_RELEASE_TESTS_BRANCH required for gauge (set in .env or add to ci-config.yaml)"
+  || die "GIT_RELEASE_TESTS_BRANCH required for gauge (set in env/.env or add to ci-config.yaml)"
 
 TAGS="${TAGS:-$([ "$FW" = ginkgo ] && echo sanity || echo e2e)}"
 

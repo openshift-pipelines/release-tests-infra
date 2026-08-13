@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Create an upgrade-tests PipelineRun from .env
+# Create an upgrade-tests PipelineRun from env/.env
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HACK_DIR="${SCRIPT_DIR}/hack"
-ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
+ENV_FILE="${ENV_FILE:-$REPO_ROOT/env/.env}"
 export ENV_FILE
 
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -76,7 +76,7 @@ resolve_channel() {
   printf '%s' "$ch"
 }
 
-[[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE (cp env.template .env)"
+[[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE (cp env/env.template env/.env)"
 set -a; source "$ENV_FILE"; set +a
 
 # shellcheck source=cluster-login.sh
@@ -165,9 +165,9 @@ fi
 
 case "$FW" in
   gauge)
-    [[ -n "${GIT_RELEASE_TESTS_BRANCH:-}" ]] || missing+=("GIT_RELEASE_TESTS_BRANCH (set in .env or add to ci-config.yaml)") ;;
+    [[ -n "${GIT_RELEASE_TESTS_BRANCH:-}" ]] || missing+=("GIT_RELEASE_TESTS_BRANCH (set in env/.env or add to ci-config.yaml)") ;;
   ginkgo)
-    [[ -n "${GIT_RELEASE_TESTS_GINKGO_BRANCH:-}" ]] || missing+=("GIT_RELEASE_TESTS_GINKGO_BRANCH (set in .env or add to ci-config.yaml)") ;;
+    [[ -n "${GIT_RELEASE_TESTS_GINKGO_BRANCH:-}" ]] || missing+=("GIT_RELEASE_TESTS_GINKGO_BRANCH (set in env/.env or add to ci-config.yaml)") ;;
   *) missing+=("TEST_FRAMEWORK must be gauge or ginkgo (got: $FW)") ;;
 esac
 
@@ -281,8 +281,12 @@ spec:
       value: "${ARCH:-linux/amd64}"
     - name: GIT_INFRA_BRANCH
       value: "${GIT_INFRA_BRANCH:-main}"
+    - name: GIT_RELEASE_TESTS_URI
+      value: "${GIT_RELEASE_TESTS_URI:-https://github.com/openshift-pipelines/release-tests.git}"
     - name: GIT_RELEASE_TESTS_BRANCH
       value: "${GIT_RELEASE_TESTS_BRANCH:-}"
+    - name: GIT_RELEASE_TESTS_GINKGO_URI
+      value: "${GIT_RELEASE_TESTS_GINKGO_URI:-https://github.com/openshift-pipelines/release-tests-ginkgo.git}"
     - name: GIT_RELEASE_TESTS_GINKGO_BRANCH
       value: "${GIT_RELEASE_TESTS_GINKGO_BRANCH:-}"
     - name: TEST_FRAMEWORK

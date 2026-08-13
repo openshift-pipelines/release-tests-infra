@@ -1,6 +1,6 @@
 # Local environment (secrets, cluster credentials)
-.env
-.env.*
+env/.env
+env/.env.*
 
 .claude/settings.json
 .clusters/

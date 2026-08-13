@@ -11,9 +11,9 @@ is_provisioned_installer() {
 }
 
 validate_cluster_env() {
-  [[ -n "${APISERVER:-}" ]] || { echo "ERROR: APISERVER required in .env" >&2; return 1; }
+  [[ -n "${APISERVER:-}" ]] || { echo "ERROR: APISERVER required in env/.env" >&2; return 1; }
   [[ -n "${KUBEADMIN_PASSWORD:-}" || -n "${OC_TOKEN:-}" ]] || {
-    echo "ERROR: KUBEADMIN_PASSWORD or OC_TOKEN required in .env" >&2
+    echo "ERROR: KUBEADMIN_PASSWORD or OC_TOKEN required in env/.env" >&2
     return 1
   }
 }

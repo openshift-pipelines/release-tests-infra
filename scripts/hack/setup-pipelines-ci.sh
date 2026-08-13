@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
 Usage: $0 [--cluster-secret-only] [--force]
 
   default:               cluster secret + Tekton tasks/pipeline
-  --cluster-secret-only: cluster-\${CLUSTER_NAME} secret only (from .env)
+  --cluster-secret-only: cluster-\${CLUSTER_NAME} secret only (from env/.env)
   --force:               recreate cluster secret if it exists
   --pvc-only:            (deprecated) run ./scripts/hack/cleanup-pipeline-pvcs.sh --legacy-only
 
@@ -34,7 +34,7 @@ EOF
 done
 
 die() { echo "ERROR: $*" >&2; exit 1; }
-ENV_FILE="${ENV_FILE:-$REPO_ROOT/.env}"
+ENV_FILE="${ENV_FILE:-$REPO_ROOT/env/.env}"
 [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE"
 set -a; source "$ENV_FILE"; set +a
 NAMESPACE="${NAMESPACE:-pipelines-ci}"
@@ -50,9 +50,9 @@ ensure_namespace() {
 }
 
 ensure_cluster_secret() {
-  [[ -n "${CLUSTER_NAME:-}" ]] || die "CLUSTER_NAME required in .env"
+  [[ -n "${CLUSTER_NAME:-}" ]] || die "CLUSTER_NAME required in env/.env"
   local secret
-  secret="$(cluster_secret_name)" || die "CLUSTER_NAME required in .env"
+  secret="$(cluster_secret_name)" || die "CLUSTER_NAME required in env/.env"
   if ! cluster_secret_exists "$NAMESPACE"; then
     echo "Cluster secret ${secret} missing — run ./scripts/hack/create-secrets.sh first"
     bash "$SCRIPT_DIR/create-secrets.sh" || die "create-secrets.sh failed"
