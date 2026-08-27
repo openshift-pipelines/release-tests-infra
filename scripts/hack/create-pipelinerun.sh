@@ -292,6 +292,8 @@ spec:
       value: "${OPERATOR_VERSION}"
     - name: GIT_INFRA_BRANCH
       value: "${GIT_INFRA_BRANCH:-main}"
+    - name: GIT_INFRA_URI
+      value: "${GIT_INFRA_URI:-}"
     - name: TAGS
       value: "${TAGS}"
     - name: TEST_SUITES
@@ -307,8 +309,24 @@ EOF
       value: "${UNINSTALL_PIPELINES_OPERATOR:-false}"
     - name: SEND_SLACK_NOTIFICATION
       value: "${SEND_SLACK_NOTIFICATION}"
+    - name: IS_DISCONNECTED
+      value: "${IS_DISCONNECTED:-false}"
+    - name: TEMPLATE
+      value: "${TEMPLATE:-}"
+    - name: LAUNCHER_VARS
+      value: '${LAUNCHER_VARS:-}'
+    - name: GIT_PRIVATE_TEMPLATES_BRANCH
+      value: "${GIT_PRIVATE_TEMPLATES_BRANCH:-master}"
+    - name: GIT_PRIVATE_TEMPLATES_URI
+      value: "${GIT_PRIVATE_TEMPLATES_URI:-https://gitlab.cee.redhat.com/aosqe/flexy-templates.git}"
   timeouts:
     pipeline: 3h
+  taskRunTemplate:
+    podTemplate:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 0
   workspaces:
 EOF
   write_workspace_spec >> "$pr"
@@ -371,7 +389,7 @@ TAGS="${TAGS:-$([ "$FW" = ginkgo ] && echo sanity || echo e2e)}"
 # Build descriptive PipelineRun name: acceptance-tests-aro-1222-prod-on-420-
 case "${INSTALLER,,}" in
   none|cluster-platforms|cluster-platform|cp) _installer_tag="cp-" ;;
-  aws-ipi|aro|rosa) _installer_tag="${INSTALLER,,}-" ;;
+  aws-ipi|aro|rosa|flexy) _installer_tag="${INSTALLER,,}-" ;;
   *) _installer_tag="" ;;
 esac
 _osp_short=$(echo "${OPERATOR_VERSION}" | sed 's/\.//g')
