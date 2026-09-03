@@ -69,7 +69,7 @@ vault_sync() {
     command -v vault >/dev/null || die "vault CLI required — https://developer.hashicorp.com/vault/install"
     unset VAULT_TOKEN
     echo "=== Vault OIDC (${VAULT_ADDR}) ===" >&2
-    VAULT_TOKEN=$(vault login -method=oidc -field=token) || die "vault login failed"
+    VAULT_TOKEN=$(vault login -method=oidc -field=token -no-store) || die "vault login failed"
     [[ -n "$VAULT_TOKEN" ]] || die "vault login returned no token"
     export VAULT_TOKEN CRED_SOURCE=vault
     vault kv get -format=json "$kv" >/dev/null || die "cannot read $kv — request openshift-pipelines Vault access"
@@ -106,6 +106,11 @@ case "$CRED_SOURCE" in local|vault) ;; *) die "CRED_SOURCE must be local or vaul
 
 if [[ "$CRED_SOURCE" == vault ]]; then
   eval "$(vault_sync)" || die "failed to load secrets from Vault"
+  # vault_sync runs in a subshell; keep Vault settings in this shell for follow-up reads (e.g. GCS-TOKEN).
+  export VAULT_ADDR="${VAULT_ADDR:-https://vault.ci.openshift.org}"
+  export VAULT_KV_MOUNT="${VAULT_KV_MOUNT:-kv}"
+  export VAULT_KV_PATH="${VAULT_KV_PATH:-selfservice/openshift-pipelines/osp-ci-secrets}"
+  export VAULT_TOKEN
 fi
 apply_pac_aliases
 
