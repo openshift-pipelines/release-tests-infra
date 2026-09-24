@@ -56,7 +56,7 @@ spec:
         ARTIFACTS_URL="https://storage.googleapis.com/${GCS_BUCKET}/${UPLOAD_PREFIX}/index.html"
 
         has_artifacts=false
-        for pattern in "*.result" "*.xml" "*.log" "*.html"; do
+        for pattern in "*.result" "*.xml" "*.log" "*.html" "*.png" "*.webm"; do
           if compgen -G "${RESULTS_DIR}/${pattern}" >/dev/null 2>&1; then
             has_artifacts=true
             break
@@ -110,19 +110,40 @@ spec:
           fi
         }
 
+        # UI acceptance pipeline writes *release-ui-tests.{result,xml}; other pipelines unchanged.
+        ui_pipeline=false
+        compgen -G "${RESULTS_DIR}/*release-ui-tests.result" >/dev/null 2>&1 && ui_pipeline=true
+        compgen -G "${RESULTS_DIR}/*release-ui-tests.xml" >/dev/null 2>&1 && ui_pipeline=true
+
+        result_is_pass() {
+          local content="$1"
+          if [[ "$ui_pipeline" == true ]]; then
+            [[ "$content" == *': pass' || "$content" == *'=pass' ]]
+          else
+            [[ "$content" == *"pass"* ]]
+          fi
+        }
+
         echo "Uploading artifacts to gs://${GCS_BUCKET}/${UPLOAD_PREFIX}/"
         count=0
         total_pass=0
         total_fail=0
         failed_suites=""
-        for f in "${RESULTS_DIR}"/*.result "${RESULTS_DIR}"/*.xml "${RESULTS_DIR}"/*.log "${RESULTS_DIR}"/*.html; do
+        for f in "${RESULTS_DIR}"/*.result "${RESULTS_DIR}"/*.xml "${RESULTS_DIR}"/*.log "${RESULTS_DIR}"/*.html "${RESULTS_DIR}"/*.png "${RESULTS_DIR}"/*.webm; do
           [[ -f "$f" ]] || continue
-          gcs_upload "$f" "$(basename "$f")"
+          case "$(basename "$f")" in
+            *.png)  content_type="image/png" ;;
+            *.webm) content_type="video/webm" ;;
+            *.html) content_type="text/html" ;;
+            *.xml)  content_type="application/xml" ;;
+            *)      content_type="application/octet-stream" ;;
+          esac
+          gcs_upload "$f" "$(basename "$f")" "$content_type"
           echo "  uploaded: $(basename "$f") ($(du -h "$f" | cut -f1))"
           count=$((count + 1))
           if [[ "$(basename "$f")" == *.result ]]; then
-            content=$(cat "$f")
-            if [[ "$content" == *"pass"* ]]; then
+            content=$(tr -d '\n' < "$f")
+            if result_is_pass "$content"; then
               total_pass=$((total_pass + 1))
             else
               total_fail=$((total_fail + 1))
@@ -133,8 +154,72 @@ spec:
         done
 
         total_suites=$((total_pass + total_fail))
+        junit_tests=0 junit_pass=0 junit_fail=0 junit_errors=0 junit_skipped=0
+
+        if [[ "$ui_pipeline" == true ]]; then
+          # Per-test counts from pytest JUnit XML only (not operator install XML).
+          read -r junit_tests junit_pass junit_fail junit_errors junit_skipped < <(
+            python3 - "$RESULTS_DIR" <<'PY'
+        import glob, os, sys
+        import xml.etree.ElementTree as ET
+
+        results_dir = sys.argv[1]
+        tests = passed = failed = errors = skipped = 0
+
+        for path in glob.glob(os.path.join(results_dir, "*release-ui-tests.xml")):
+            try:
+                root = ET.parse(path).getroot()
+            except ET.ParseError:
+                continue
+            suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+            for suite in suites:
+                if suite.tag != "testsuite":
+                    continue
+                suite_tests = int(suite.attrib.get("tests", 0) or 0)
+                suite_failures = int(suite.attrib.get("failures", 0) or 0)
+                suite_errors = int(suite.attrib.get("errors", 0) or 0)
+                suite_skipped = int(suite.attrib.get("skipped", 0) or 0)
+                tests += suite_tests
+                failed += suite_failures
+                errors += suite_errors
+                skipped += suite_skipped
+                passed += max(suite_tests - suite_failures - suite_errors - suite_skipped, 0)
+
+        print(tests, passed, failed, errors, skipped)
+        PY
+          )
+        fi
+
         if [[ $total_fail -gt 0 ]]; then
           summary_status="FAILED"
+        elif [[ $total_suites -gt 0 ]]; then
+          summary_status="PASSED"
+        else
+          summary_status="UNKNOWN"
+        fi
+
+        if [[ "$ui_pipeline" == true && "${junit_tests:-0}" -gt 0 ]]; then
+          junit_bad=$((junit_fail + junit_errors))
+          summary_detail="${junit_pass}/${junit_tests} tests passed"
+          if [[ $junit_bad -gt 0 ]]; then
+            summary_detail="${summary_detail}, ${junit_bad} failed"
+            [[ "${junit_errors:-0}" -gt 0 ]] && summary_detail="${summary_detail} (${junit_errors} errors)"
+          fi
+          if [[ $total_suites -gt 0 ]]; then
+            summary_detail="${summary_detail}; ${total_pass}/${total_suites} suites passed"
+            if [[ $total_fail -gt 0 ]]; then
+              summary_detail="${summary_detail}, ${total_fail}/${total_suites} suites failed"
+            fi
+          fi
+          summary_failed=""
+          [[ $total_fail -gt 0 ]] && summary_failed="Failed suites: ${failed_suites}"
+        elif [[ "$ui_pipeline" == true && $total_fail -gt 0 ]]; then
+          summary_detail="${total_pass}/${total_suites} suites passed, ${total_fail}/${total_suites} suites failed"
+          summary_failed="Failed suites: ${failed_suites}"
+        elif [[ "$ui_pipeline" == true && $total_suites -gt 0 ]]; then
+          summary_detail="${total_pass}/${total_suites} suites passed"
+          summary_failed=""
+        elif [[ $total_fail -gt 0 ]]; then
           summary_detail="${total_pass}/${total_suites} passed, ${total_fail}/${total_suites} failed"
           summary_failed="Failed: ${failed_suites}"
         elif [[ $total_suites -gt 0 ]]; then
@@ -142,7 +227,6 @@ spec:
           summary_detail="${total_pass}/${total_suites} suites passed"
           summary_failed=""
         else
-          summary_status="UNKNOWN"
           summary_detail="No .result files found"
           summary_failed=""
         fi
@@ -194,8 +278,8 @@ spec:
           [[ -f "$f" ]] || continue
           fname=$(basename "$f")
           suite_name="${fname%.result}"
-          content=$(cat "$f")
-          if [[ "$content" == *"pass"* ]]; then
+          content=$(tr -d '\n' < "$f")
+          if result_is_pass "$content"; then
             echo "<li><a href=\"${fname}\" class=\"pass\">${suite_name}</a> <span class=\"badge badge-pass\">PASS</span></li>" >> "$INDEX_FILE"
           else
             echo "<li><a href=\"${fname}\" class=\"fail\">${suite_name}</a> <span class=\"badge badge-fail\">FAIL</span></li>" >> "$INDEX_FILE"
@@ -211,6 +295,17 @@ spec:
           icon="📄"
           [[ "$fname" == *.xml ]] && icon="📊"
           [[ "$fname" == *.log ]] && icon="📋"
+          echo "<li><a href=\"${fname}\">${icon} ${fname}</a> <span class=\"size\">${size}</span></li>" >> "$INDEX_FILE"
+        done
+        echo "</ul>" >> "$INDEX_FILE"
+
+        echo '<h2>Screenshots and Recordings</h2><ul>' >> "$INDEX_FILE"
+        for f in "${RESULTS_DIR}"/*.png "${RESULTS_DIR}"/*.webm; do
+          [[ -f "$f" ]] || continue
+          fname=$(basename "$f")
+          size=$(du -h "$f" | cut -f1)
+          icon="🖼"
+          [[ "$fname" == *.webm ]] && icon="🎬"
           echo "<li><a href=\"${fname}\">${icon} ${fname}</a> <span class=\"size\">${size}</span></li>" >> "$INDEX_FILE"
         done
         echo "</ul>" >> "$INDEX_FILE"
