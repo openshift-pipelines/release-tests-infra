@@ -24,7 +24,11 @@ spec:
         pr="$(params.PIPELINE_RUN)"
         delay="$(params.DELETE_DELAY)"
         image="$(params.IMAGE)"
-        safe=$(printf '%s' "$pr" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//' | cut -c1-40)
+        # Job name max 63 chars; "cleanup-" prefix is 8 chars → 55 for the suffix.
+        # Truncate then strip trailing dashes (cut can end on "-" after version dots → dashes).
+        safe=$(printf '%s' "$pr" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g; s/-\{2,\}/-/g; s/^-//; s/-$//')
+        safe=$(printf '%s' "$safe" | cut -c1-55 | sed 's/^-\+//; s/-\+$//')
+        [[ -z "$safe" ]] && safe="pr$(printf '%s' "$pr" | cksum | awk '{print $1}')"
         job_name="cleanup-${safe}"
 
         oc delete job "$job_name" -n "$NAMESPACE" --ignore-not-found 2>/dev/null || true

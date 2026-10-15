@@ -1,14 +1,21 @@
 ---
-# Version-to-branch mapping for OpenShift Pipelines components.
-# Used by create-pipelinerun.sh and run-upgrade-tests.sh to auto-resolve
-# CHANNEL and GIT_RELEASE_TESTS_BRANCH from OPERATOR_VERSION.
+# Version-to-branch mapping for release-tests-infra workflows.
 #
-# Keys are major.minor (e.g. "1.23"), values contain:
-#   channel:        subscription channel name
-#   release-tests:  gauge release-tests git branch
-#   release-tests-ginkgo:   ginkgo release-tests git branch (optional)
+# OpenShift Pipelines operator keys (major.minor, e.g. "1.23"):
+#   Used by create-pipelinerun.sh / run-upgrade-tests.sh from OPERATOR_VERSION.
+#   channel, release-tests.revision, release-tests-ginkgo.revision (optional)
+#
+# OpenShift cluster keys (major.minor, e.g. "4.20"):
+#   Used by create-pipelinerun-ui.sh from OCP version (OPENSHIFT_VERSION or oc).
+#   release-ui-tests.revision
 #
 # Explicit .env values always override ci-config.yaml defaults.
+#
+# --- OpenShift Pipelines operator versions ---
+'1.14':
+  channel: pipelines-1.14
+  release-tests:
+    revision: release-v1.14
 '1.15':
   channel: pipelines-1.15
   release-tests:
@@ -59,3 +66,26 @@
     revision: master
   release-tests-ginkgo:
     revision: main
+
+# --- OpenShift cluster versions (release-ui-tests branches) ---
+'4.14':
+  release-ui-tests:
+    revision: release-v4.14
+'4.16':
+  release-ui-tests:
+    revision: release-v4.16
+'4.18':
+  release-ui-tests:
+    revision: release-v4.18
+'4.19':
+  release-ui-tests:
+    revision: release-v4.19
+'4.20':
+  release-ui-tests:
+    revision: release-v4.20
+'4.21':
+  release-ui-tests:
+    revision: release-v4.21
+'4.22':
+  release-ui-tests:
+    revision: release-v4.22
