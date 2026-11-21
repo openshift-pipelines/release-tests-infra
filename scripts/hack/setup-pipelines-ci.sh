@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NAMESPACE="${NAMESPACE:-pipelines-ci}"
 FORCE=false MODE=full
+SKIP_OPERATOR_INSTALL=false
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -14,13 +15,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cluster-secret-only) MODE=cluster; shift ;;
     --force) FORCE=true; shift ;;
+    --skip-operator-install) SKIP_OPERATOR_INSTALL=true; shift ;;
     -h|--help)
       cat <<EOF
-Usage: $0 [--cluster-secret-only] [--force]
+Usage: $0 [--cluster-secret-only] [--force] [--skip-operator-install]
 
   default:               cluster secret + Tekton tasks/pipeline
   --cluster-secret-only: cluster-\${CLUSTER_NAME} secret only (from env/.env)
   --force:               recreate cluster secret if it exists
+  --skip-operator-install: never install OSP here (ignore INSTALL_PIPELINES_OPERATOR from .env)
   --pvc-only:            (deprecated) run ./scripts/hack/cleanup-pipeline-pvcs.sh --legacy-only
 
   INSTALLER=cluster-platforms → cluster-ca-cert, OC_TOKEN in secret
@@ -37,6 +40,12 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/env/.env}"
 [[ -f "$ENV_FILE" ]] || die "missing $ENV_FILE"
 set -a; source "$ENV_FILE"; set +a
+# Flag wins over env-file INSTALL_PIPELINES_OPERATOR (env source would otherwise re-enable install).
+if [[ "$SKIP_OPERATOR_INSTALL" == true ]]; then
+  INSTALL_PIPELINES_OPERATOR=false
+  export INSTALL_PIPELINES_OPERATOR
+  echo "Skipping operator install (--skip-operator-install; OSP install belongs to the test framework)"
+fi
 NAMESPACE="${NAMESPACE:-pipelines-ci}"
 command -v oc >/dev/null || die "oc CLI required"
 # shellcheck source=cluster-login.sh
@@ -198,8 +207,12 @@ ensure_namespace
 ensure_cluster_secret
 
 install_pipelines_operator
-verify_pipelines_install
-enable_pipelines_console_plugin
+# Only verify / enable console plugin when this script actually installs OSP.
+# UI workflow forces INSTALL_PIPELINES_OPERATOR=false here (install is inside release-ui-tests).
+if [[ "$(printf '%s' "${INSTALL_PIPELINES_OPERATOR:-false}" | tr '[:upper:]' '[:lower:]')" == true ]]; then
+  verify_pipelines_install
+  enable_pipelines_console_plugin
+fi
 
 echo "=== Applying Tekton Tasks & Pipeline ==="
 oc apply -f "$REPO_ROOT/ci/tasks/" -n "$NAMESPACE"

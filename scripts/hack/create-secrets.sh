@@ -40,6 +40,23 @@ update_env_var() {
 
 apply_secret() { "$@" | oc apply -n "$NAMESPACE" -f -; CREATED=$((CREATED + 1)); }
 
+# Replace $PLACEHOLDER in a secrets/*.yaml template. Args: file PLACEHOLDER value [...]
+# Prefer this over sed — AWS keys and tokens often contain /, |, &, which break s///.
+render_secret() {
+  local tmpl="$1"; shift
+  python3 - "$tmpl" "$@" <<'PY'
+import sys
+content = open(sys.argv[1], encoding="utf-8").read()
+args = sys.argv[2:]
+if len(args) % 2 != 0:
+    sys.stderr.write("render_secret: expected PLACEHOLDER value pairs\n")
+    sys.exit(1)
+for i in range(0, len(args), 2):
+    content = content.replace("$" + args[i], args[i + 1])
+sys.stdout.write(content)
+PY
+}
+
 unset_env_secret_vars() {
   local var
   while IFS= read -r var; do
@@ -125,64 +142,84 @@ fi
 CREATED=0
 echo "=== Creating secrets in $NAMESPACE (CRED_SOURCE=$CRED_SOURCE) ==="
 
-need AWS_ACCESS_KEY AWS_ACCESS_SECRET && apply_secret sed \
-  -e "s/\$AWS_ACCESS_KEY_ID/${AWS_ACCESS_KEY}/" -e "s/\$AWS_SECRET_ACCESS_KEY/${AWS_ACCESS_SECRET}/" \
-  "$SECRETS_DIR/aws.yaml"
+need AWS_ACCESS_KEY AWS_ACCESS_SECRET && apply_secret render_secret \
+  "$SECRETS_DIR/aws.yaml" \
+  AWS_ACCESS_KEY_ID "${AWS_ACCESS_KEY}" \
+  AWS_SECRET_ACCESS_KEY "${AWS_ACCESS_SECRET}"
 
-need GITHUB_TOKEN && apply_secret sed -e "s|\$GITHUB_TOKEN|${GITHUB_TOKEN}|" "$SECRETS_DIR/github.yaml"
+need GITHUB_TOKEN && apply_secret render_secret \
+  "$SECRETS_DIR/github.yaml" GITHUB_TOKEN "${GITHUB_TOKEN}"
 
-need_any PAC_GITHUB_TOKEN PAC_GITHUB_ORG PAC_GITHUB_WEBHOOK_TOKEN && apply_secret sed \
-  -e "s|\$PAC_GITHUB_TOKEN|${PAC_GITHUB_TOKEN:-}|" -e "s|\$PAC_GITHUB_ORG|${PAC_GITHUB_ORG:-}|" \
-  -e "s|\$PAC_GITHUB_WEBHOOK_TOKEN|${PAC_GITHUB_WEBHOOK_TOKEN:-}|" "$SECRETS_DIR/pac-github-token.yaml"
+need_any PAC_GITHUB_TOKEN PAC_GITHUB_ORG PAC_GITHUB_WEBHOOK_TOKEN && apply_secret render_secret \
+  "$SECRETS_DIR/pac-github-token.yaml" \
+  PAC_GITHUB_TOKEN "${PAC_GITHUB_TOKEN:-}" \
+  PAC_GITHUB_ORG "${PAC_GITHUB_ORG:-}" \
+  PAC_GITHUB_WEBHOOK_TOKEN "${PAC_GITHUB_WEBHOOK_TOKEN:-}"
 
-need_any GITLAB_TOKEN GITLAB_GROUP_NAMESPACE GITLAB_PROJECT_ID GITLAB_WEBHOOK_TOKEN && apply_secret sed \
-  -e "s/\$GITLAB_TOKEN/${GITLAB_TOKEN:-}/" -e "s/\$GITLAB_GROUP_NAMESPACE/${GITLAB_GROUP_NAMESPACE:-}/" \
-  -e "s/\$GITLAB_PROJECT_ID/${GITLAB_PROJECT_ID:-}/" -e "s/\$GITLAB_WEBHOOK_TOKEN/${GITLAB_WEBHOOK_TOKEN:-}/" \
-  "$SECRETS_DIR/pac-gitlab.yaml"
+need_any GITLAB_TOKEN GITLAB_GROUP_NAMESPACE GITLAB_PROJECT_ID GITLAB_WEBHOOK_TOKEN && apply_secret render_secret \
+  "$SECRETS_DIR/pac-gitlab.yaml" \
+  GITLAB_TOKEN "${GITLAB_TOKEN:-}" \
+  GITLAB_GROUP_NAMESPACE "${GITLAB_GROUP_NAMESPACE:-}" \
+  GITLAB_PROJECT_ID "${GITLAB_PROJECT_ID:-}" \
+  GITLAB_WEBHOOK_TOKEN "${GITLAB_WEBHOOK_TOKEN:-}"
 
-need ssh_privatekey && apply_secret sed \
-  -e "s/\$ENCODED_GITLAB_SSH_PRIVATE_KEY/$(echo -n "$ssh_privatekey" | b64)/" \
-  "$SECRETS_DIR/gitlab-ssh-private-key.yaml"
+need ssh_privatekey && apply_secret render_secret \
+  "$SECRETS_DIR/gitlab-ssh-private-key.yaml" \
+  ENCODED_GITLAB_SSH_PRIVATE_KEY "$(printf '%s' "$ssh_privatekey" | b64)"
 
-need_any ENCODED_GITHUB_APP_ID ENCODED_GITHUB_APP_PRIVATE_KEY ENCODED_GITHUB_WEBHOOK_SECRET && apply_secret sed \
-  -e "s/\$ENCODED_GITHUB_APP_PRIVATE_KEY/${ENCODED_GITHUB_APP_PRIVATE_KEY:-}/" \
-  -e "s/\$ENCODED_GITHUB_WEBHOOK_SECRET/${ENCODED_GITHUB_WEBHOOK_SECRET:-}/" \
-  -e "s/\$ENCODED_GITHUB_APP_ID/${ENCODED_GITHUB_APP_ID:-}/" "$SECRETS_DIR/pac-github.yaml"
+need_any ENCODED_GITHUB_APP_ID ENCODED_GITHUB_APP_PRIVATE_KEY ENCODED_GITHUB_WEBHOOK_SECRET && apply_secret render_secret \
+  "$SECRETS_DIR/pac-github.yaml" \
+  ENCODED_GITHUB_APP_PRIVATE_KEY "${ENCODED_GITHUB_APP_PRIVATE_KEY:-}" \
+  ENCODED_GITHUB_WEBHOOK_SECRET "${ENCODED_GITHUB_WEBHOOK_SECRET:-}" \
+  ENCODED_GITHUB_APP_ID "${ENCODED_GITHUB_APP_ID:-}"
 
-need_any BREW_USER BREW_PASS QUAY_USER QUAY_PASS QUAY_API_TOKEN && apply_secret sed \
-  -e "s/\$BREW_USER/${BREW_USER:-}/" -e "s/\$BREW_PASS/${BREW_PASS:-}/" \
-  -e "s/\$QUAY_USER/${QUAY_USER:-}/" -e "s/\$QUAY_PASS/${QUAY_PASS:-}/" \
-  -e "s/\$QUAY_API_TOKEN/${QUAY_API_TOKEN:-}/" "$SECRETS_DIR/p12n.yaml"
+need_any BREW_USER BREW_PASS QUAY_USER QUAY_PASS QUAY_API_TOKEN && apply_secret render_secret \
+  "$SECRETS_DIR/p12n.yaml" \
+  BREW_USER "${BREW_USER:-}" \
+  BREW_PASS "${BREW_PASS:-}" \
+  QUAY_USER "${QUAY_USER:-}" \
+  QUAY_PASS "${QUAY_PASS:-}" \
+  QUAY_API_TOKEN "${QUAY_API_TOKEN:-}"
 
 if need QUAY_USER QUAY_PASS; then
-  QUAY_AUTH=$(echo -n "${QUAY_USER}:${QUAY_PASS}" | b64)
-  apply_secret sed -e "s/\$QUAY_AUTH/${QUAY_AUTH}/" "$SECRETS_DIR/quay-io-dockerconfig.yaml"
-  apply_secret sed -e "s/\$QUAY_USER/${QUAY_USER}/" -e "s/\$QUAY_PASS/${QUAY_PASS}/" \
-    "$SECRETS_DIR/skopeo-copy-quay-creds.yaml"
+  QUAY_AUTH=$(printf '%s' "${QUAY_USER}:${QUAY_PASS}" | b64)
+  apply_secret render_secret "$SECRETS_DIR/quay-io-dockerconfig.yaml" QUAY_AUTH "${QUAY_AUTH}"
+  apply_secret render_secret "$SECRETS_DIR/skopeo-copy-quay-creds.yaml" \
+    QUAY_USER "${QUAY_USER}" QUAY_PASS "${QUAY_PASS}"
 fi
 
-need MAC_HOSTNAME MAC_USERNAME MAC_PASSWORD && apply_secret sed \
-  -e "s|\$MAC_HOSTNAME|${MAC_HOSTNAME}|" -e "s|\$MAC_USERNAME|${MAC_USERNAME}|" \
-  -e "s|\$MAC_PASSWORD|${MAC_PASSWORD}|" "$SECRETS_DIR/mac-mini.yaml"
+need MAC_HOSTNAME MAC_USERNAME MAC_PASSWORD && apply_secret render_secret \
+  "$SECRETS_DIR/mac-mini.yaml" \
+  MAC_HOSTNAME "${MAC_HOSTNAME}" \
+  MAC_USERNAME "${MAC_USERNAME}" \
+  MAC_PASSWORD "${MAC_PASSWORD}"
 
-need POLARION_USERNAME POLARION_PASSWORD POLARION_PROJECT && apply_secret sed \
-  -e "s/\$POLARION_USERNAME/${POLARION_USERNAME}/" -e "s/\$POLARION_PASSWORD/${POLARION_PASSWORD}/" \
-  -e "s/\$POLARION_PROJECT/${POLARION_PROJECT}/" "$SECRETS_DIR/polarion.yaml"
+need POLARION_USERNAME POLARION_PASSWORD POLARION_PROJECT && apply_secret render_secret \
+  "$SECRETS_DIR/polarion.yaml" \
+  POLARION_USERNAME "${POLARION_USERNAME}" \
+  POLARION_PASSWORD "${POLARION_PASSWORD}" \
+  POLARION_PROJECT "${POLARION_PROJECT}"
 
-need RP_URL RP_PROJECT RP_ROBOT_UUID && apply_secret sed \
-  -e "s|\$RP_URL|${RP_URL}|" -e "s|\$RP_ROBOT_UUID|${RP_ROBOT_UUID}|" \
-  -e "s|\$RP_PROJECT|${RP_PROJECT}|" -e "s|\$RP_SUPERADMIN_UUID|${RP_SUPERADMIN_UUID:-}|" \
-  "$SECRETS_DIR/reportportal.yaml"
+need RP_URL RP_PROJECT RP_ROBOT_UUID && apply_secret render_secret \
+  "$SECRETS_DIR/reportportal.yaml" \
+  RP_URL "${RP_URL}" \
+  RP_ROBOT_UUID "${RP_ROBOT_UUID}" \
+  RP_PROJECT "${RP_PROJECT}" \
+  RP_SUPERADMIN_UUID "${RP_SUPERADMIN_UUID:-}"
 
-need SUBSCRIPTION_USERNAME SUBSCRIPTION_PASSWORD && apply_secret sed \
-  -e "s|\$SUBSCRIPTION_USERNAME|${SUBSCRIPTION_USERNAME}|" \
-  -e "s|\$SUBSCRIPTION_PASSWORD|${SUBSCRIPTION_PASSWORD}|" "$SECRETS_DIR/rhel-subscription.yaml"
+need SUBSCRIPTION_USERNAME SUBSCRIPTION_PASSWORD && apply_secret render_secret \
+  "$SECRETS_DIR/rhel-subscription.yaml" \
+  SUBSCRIPTION_USERNAME "${SUBSCRIPTION_USERNAME}" \
+  SUBSCRIPTION_PASSWORD "${SUBSCRIPTION_PASSWORD}"
 
-need SLACK_WEBHOOK_URL && apply_secret sed -e "s|\$SLACK_WEBHOOK_URL|${SLACK_WEBHOOK_URL}|" "$SECRETS_DIR/slack.yaml"
+need SLACK_WEBHOOK_URL && apply_secret render_secret \
+  "$SECRETS_DIR/slack.yaml" SLACK_WEBHOOK_URL "${SLACK_WEBHOOK_URL}"
 
-need UPLOADER_USERNAME UPLOADER_PASSWORD UPLOADER_HOST && apply_secret sed \
-  -e "s|\$UPLOADER_USERNAME|${UPLOADER_USERNAME}|" -e "s|\$UPLOADER_PASSWORD|${UPLOADER_PASSWORD}|" \
-  -e "s|\$UPLOADER_HOST|${UPLOADER_HOST}|" "$SECRETS_DIR/uploader.yaml"
+need UPLOADER_USERNAME UPLOADER_PASSWORD UPLOADER_HOST && apply_secret render_secret \
+  "$SECRETS_DIR/uploader.yaml" \
+  UPLOADER_USERNAME "${UPLOADER_USERNAME}" \
+  UPLOADER_PASSWORD "${UPLOADER_PASSWORD}" \
+  UPLOADER_HOST "${UPLOADER_HOST}"
 
 # GCS artifact storage — pulls SA key from env/.env (GCS_SA_KEY_JSON) or Vault (GCS_TOKEN)
 _gcs_json=""

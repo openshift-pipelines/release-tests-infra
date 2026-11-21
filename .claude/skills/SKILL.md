@@ -27,6 +27,7 @@ Each operation uses a separate env file. NEVER use `.env` directly — always us
 | Operation | Env file | Script |
 |-----------|----------|--------|
 | **Acceptance** | `env/.env.acceptance` | `ENV_FILE=env/.env.acceptance ./scripts/run-workflow.sh` |
+| **UI acceptance** | `env/.env.acceptance-ui` | `ENV_FILE=env/.env.acceptance-ui ./scripts/run-ui-workflow.sh` |
 | **Upgrade** | `env/.env.upgrade` | `ENV_FILE=env/.env.upgrade ./scripts/run-upgrade-tests.sh` |
 
 ---
@@ -96,6 +97,44 @@ After the user provides values:
 
 ```bash
 ENV_FILE=env/.env.acceptance ./scripts/run-workflow.sh
+```
+
+---
+
+## UI acceptance tests flow
+
+### Step 1: Read and validate
+
+Copy template if needed: `cp env/env.acceptance-ui.template env/.env.acceptance-ui`
+
+Required fields (same cluster/operator as acceptance, plus UI-specific):
+
+| # | Field | Default / notes |
+|---|-------|-----------------|
+| 1 | `CLUSTER_NAME` | Free text |
+| 2 | `API_URL` | Required — OpenShift API URL |
+| 3 | `CONSOLE_URL` | Required — OpenShift console URL |
+| 4 | `CONSOLE_USERNAME` | Default `kubeadmin` |
+| 5 | `CONSOLE_PASSWORD` | Required (or `OC_TOKEN`) for existing clusters |
+| 6 | `OPERATOR_VERSION` | e.g. 1.23.0 |
+| 7 | `OPERATOR_ENVIRONMENT` | `pre-stage` (needs `KONFLUX_INDEX_IMAGE`) |
+| 8 | `MARKERS` | `sanity` |
+| 9 | `GIT_UI_TESTS_BRANCH` | Auto from OCP version via `ci-config.yaml` (or set explicitly) |
+
+Optional: `APP_TIMEOUT` (default `90000`), `CAPTURE_SCREENSHOTS` (default `true`), `CAPTURE_RECORDINGS` (default `true`), `UPLOAD_RECORDINGS_ON_FAILURE` (default `false` — upload .webm to GCS only when tests fail; requires `CAPTURE_RECORDINGS=true`), `SETUP_TESTING_ACCOUNTS=false`, `UI_IMAGE=quay.io/openshift-pipeline/ui-ci:latest`, `INSTALL_PIPELINES_OPERATOR=true` (infra installs OSP via setup-pipelines-ci; PipelineRun always sends `false` to the framework), `INSTALL_LOGGING_OPERATOR=false` / `INSTALL_SERVERLESS_OPERATOR=false` (infra workflow + passed to framework)
+
+### Step 2: Run
+
+Same provisioning model as acceptance: `API_URL` is the **management** cluster (Tekton host; mapped to infra `APISERVER`). Set `INSTALLER=aws-ipi` or `aro` to let the pipeline provision the **test** cluster; use `none` / `cluster-platforms` with an existing test cluster. OSP / logging / serverless install is done by the **infra workflow** (`setup-pipelines-ci` / `run-ui-workflow`); the PipelineRun always sends `INSTALL_PIPELINES_OPERATOR=false` to `release-ui-tests`.
+
+```bash
+ENV_FILE=env/.env.acceptance-ui ./scripts/run-ui-workflow.sh
+```
+
+Or PipelineRun only (after setup):
+
+```bash
+ENV_FILE=env/.env.acceptance-ui ./scripts/hack/create-pipelinerun-ui.sh
 ```
 
 ### Step 5: Monitor and analyze
@@ -273,4 +312,4 @@ Then restart the IDE. The script auto-detects the active cluster and writes `.cl
 
 ## Auto-resolution
 
-`ci-config.yaml` maps OPERATOR_VERSION to CHANNEL and GIT_RELEASE_TESTS_BRANCH automatically. Do not set these unless the user explicitly asks to override them.
+`ci-config.yaml` maps `OPERATOR_VERSION` to `CHANNEL` and `GIT_RELEASE_TESTS_BRANCH` automatically (acceptance/upgrade). For UI runs, `CHANNEL` is resolved from `OPERATOR_VERSION` and `GIT_UI_TESTS_BRANCH` from OCP version (`OPENSHIFT_VERSION` or `oc get clusterversion`). Do not set these unless the user explicitly asks to override them.

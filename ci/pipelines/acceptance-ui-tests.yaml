@@ -1,0 +1,317 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: acceptance-ui-tests
+spec:
+  params:
+  - name: INSTALLER
+    description: "Provisioning method: aws-ipi, aro, cluster-platforms, none"
+    default: cluster-platforms
+  - name: ARCH
+    description: cluster architecture
+    default: "linux/amd64"
+  - name: BASE_DOMAIN
+    default: aws.ospqa.com
+  - name: AWS_REGION
+    default: us-east-2
+  - name: AZURE_LOCATION
+    default: eastus
+  - name: OPENSHIFT_VERSION
+    default: stable
+  - name: KEEP_CLUSTER
+    default: "false"
+  - name: CLUSTER_LIFETIME
+    default: "6h"
+  - name: CHANNEL
+    description: OLM subscription channel (e.g. pipelines-1.21); passed to release-ui-tests
+    default: stable
+  - name: CLUSTER_NAME
+    description: "Cluster name prefix (aws-ipi) or existing cluster name (cluster-platforms)"
+    default: ""
+  - name: API_URL
+    description: OpenShift API URL passed to release-ui-tests (required)
+    default: ""
+  - name: CONSOLE_URL
+    description: OpenShift console URL passed to release-ui-tests (required)
+    default: ""
+  - name: CONSOLE_USERNAME
+    description: Console login username passed to release-ui-tests
+    default: kubeadmin
+  - name: GIT_INFRA_URI
+    default: https://github.com/openshift-pipelines/release-tests-infra.git
+  - name: GIT_INFRA_BRANCH
+    default: main
+  - name: GIT_UI_TESTS_URI
+    default: https://github.com/openshift-pipelines/release-ui-tests.git
+  - name: GIT_UI_TESTS_BRANCH
+    description: release-ui-tests branch (e.g. release-v4.22; auto-resolved from OCP version via ci-config.yaml)
+    default: ""
+  - name: UI_IMAGE
+    description: Container image for running UI tests
+    default: quay.io/openshift-pipeline/ui-ci:latest
+  - name: INSTALL_PIPELINES_OPERATOR
+    description: Passed to release-ui-tests; create-pipelinerun-ui always sets false (infra installs OSP)
+    default: "false"
+  - name: OSP_INSTALL_METHOD
+    description: Passed to release-ui-tests (framework default ui)
+    default: "ui"
+  - name: INSTALL_LOGGING_OPERATOR
+    description: Passed to release-ui-tests framework (noop until framework implements it)
+    default: "false"
+  - name: INSTALL_SERVERLESS_OPERATOR
+    description: Passed to release-ui-tests framework (noop until framework implements it)
+    default: "false"
+  - name: SETUP_TESTING_ACCOUNTS
+    description: Create test users (consoledeveloper, etc.); default false for UI tests
+    default: "false"
+  - name: KONFLUX_INDEX_IMAGE
+    description: Konflux index image URL passed to release-ui-tests
+    default: ""
+  - name: OPERATOR_ENVIRONMENT
+    description: p12n operator environment (prod, stage, pre-stage)
+    default: pre-stage
+  - name: OPERATOR_VERSION
+    description: version of Openshift Pipelines operator (x.y.z)
+    default: ""
+  - name: MARKERS
+    description: pytest marker expression for UI tests
+    default: sanity
+  - name: PYTEST_ARGS
+    description: Extra arguments passed to pytest
+    default: ""
+  - name: APP_TIMEOUT
+    description: Application timeout for Playwright element waits (ms)
+    default: "90000"
+  - name: AUTH_TYPE
+    description: Console authentication mode for UI tests (e.g. kube:admin)
+    default: "kube:admin"
+  - name: CAPTURE_SCREENSHOTS
+    description: Capture Playwright screenshots on test failure
+    default: "true"
+  - name: CAPTURE_RECORDINGS
+    description: Enable Playwright video recording during tests
+    default: "true"
+  - name: UPLOAD_RECORDINGS_ON_FAILURE
+    description: Upload .webm recordings to GCS only when tests fail (requires CAPTURE_RECORDINGS=true)
+    default: "false"
+  - name: POST_TEST_IMAGE
+    description: Image for slack post steps (multi-arch cli)
+    default: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+  - name: SEND_SLACK_NOTIFICATION
+    description: Post pipeline status to Slack (requires slack webhook secret)
+    default: "false"
+  workspaces:
+  - name: data
+    description: Per-PipelineRun PVC (git, results subPaths).
+
+  tasks:
+  # --- Provision cluster (aws-ipi/aro) or skip (cluster-platforms/none) ---
+  - name: provision-cluster
+    params:
+      - name: CLUSTER_NAME
+        value: $(params.CLUSTER_NAME)
+      - name: INSTALLER
+        value: $(params.INSTALLER)
+      - name: BASE_DOMAIN
+        value: $(params.BASE_DOMAIN)
+      - name: AWS_REGION
+        value: $(params.AWS_REGION)
+      - name: AZURE_LOCATION
+        value: $(params.AZURE_LOCATION)
+      - name: OPENSHIFT_VERSION
+        value: $(params.OPENSHIFT_VERSION)
+      - name: ARCH
+        value: $(params.ARCH)
+      - name: CLUSTER_LIFETIME
+        value: $(params.CLUSTER_LIFETIME)
+    taskRef:
+      name: provision-cluster
+    timeout: 60m
+
+  # --- Clone repos ---
+  - name: clone-infra-git
+    runAfter:
+      - provision-cluster
+    params:
+      - name: URL
+        value: $(params.GIT_INFRA_URI)
+      - name: DELETE_EXISTING
+        value: "true"
+      - name: REVISION
+        value: $(params.GIT_INFRA_BRANCH)
+    taskRef:
+      resolver: cluster
+      params:
+      - name: kind
+        value: task
+      - name: name
+        value: git-clone
+      - name: namespace
+        value: openshift-pipelines
+    timeout: 10m
+    workspaces:
+    - name: output
+      workspace: data
+      subPath: infra-git
+
+  - name: clone-release-ui-tests-git
+    runAfter:
+      - clone-infra-git
+    params:
+      - name: URL
+        value: $(params.GIT_UI_TESTS_URI)
+      - name: DELETE_EXISTING
+        value: "true"
+      - name: REVISION
+        value: $(params.GIT_UI_TESTS_BRANCH)
+    taskRef:
+      resolver: cluster
+      params:
+      - name: kind
+        value: task
+      - name: name
+        value: git-clone
+      - name: namespace
+        value: openshift-pipelines
+    timeout: 10m
+    workspaces:
+    - name: output
+      workspace: data
+      subPath: release-ui-tests-git
+
+  # --- Setup ---
+  - name: setup-testing-accounts
+    params:
+      - name: CLUSTER_NAME
+        value: $(tasks.provision-cluster.results.cluster-name)
+    runAfter:
+      - clone-infra-git
+    taskRef:
+      name: setup-testing-accounts
+    when:
+      - input: $(params.SETUP_TESTING_ACCOUNTS)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+    - name: infra-git
+      workspace: data
+      subPath: infra-git
+
+  # --- UI tests (infra installs OSP; PipelineRun should pass INSTALL_PIPELINES_OPERATOR=false) ---
+  - name: release-ui-tests
+    params:
+      - name: CLUSTER_NAME
+        value: $(tasks.provision-cluster.results.cluster-name)
+      - name: IMAGE
+        value: $(params.UI_IMAGE)
+      - name: API_URL
+        value: $(params.API_URL)
+      - name: CONSOLE_URL
+        value: $(params.CONSOLE_URL)
+      - name: CONSOLE_USERNAME
+        value: $(params.CONSOLE_USERNAME)
+      - name: OPERATOR_VERSION
+        value: $(params.OPERATOR_VERSION)
+      - name: OPERATOR_ENVIRONMENT
+        value: $(params.OPERATOR_ENVIRONMENT)
+      - name: CHANNEL
+        value: $(params.CHANNEL)
+      - name: KONFLUX_INDEX_IMAGE
+        value: $(params.KONFLUX_INDEX_IMAGE)
+      - name: INSTALL_PIPELINES_OPERATOR
+        value: $(params.INSTALL_PIPELINES_OPERATOR)
+      - name: OSP_INSTALL_METHOD
+        value: $(params.OSP_INSTALL_METHOD)
+      - name: INSTALL_LOGGING_OPERATOR
+        value: $(params.INSTALL_LOGGING_OPERATOR)
+      - name: INSTALL_SERVERLESS_OPERATOR
+        value: $(params.INSTALL_SERVERLESS_OPERATOR)
+      - name: MARKERS
+        value: $(params.MARKERS)
+      - name: PYTEST_ARGS
+        value: $(params.PYTEST_ARGS)
+      - name: APP_TIMEOUT
+        value: $(params.APP_TIMEOUT)
+      - name: AUTH_TYPE
+        value: $(params.AUTH_TYPE)
+      - name: CAPTURE_SCREENSHOTS
+        value: $(params.CAPTURE_SCREENSHOTS)
+      - name: CAPTURE_RECORDINGS
+        value: $(params.CAPTURE_RECORDINGS)
+      - name: UPLOAD_RECORDINGS_ON_FAILURE
+        value: $(params.UPLOAD_RECORDINGS_ON_FAILURE)
+      - name: FAIL_ON_ERROR
+        value: "true"
+    runAfter:
+      - clone-release-ui-tests-git
+      - setup-testing-accounts
+    taskRef:
+      name: release-ui-tests
+    timeout: 2h
+    workspaces:
+    - name: release-ui-tests-git
+      workspace: data
+      subPath: release-ui-tests-git
+    - name: results
+      workspace: data
+      subPath: results
+
+  - name: send-slack-notification
+    params:
+      - name: IMAGE
+        value: $(params.POST_TEST_IMAGE)
+      - name: ENABLED
+        value: $(params.SEND_SLACK_NOTIFICATION)
+      - name: MESSAGE
+        value: |
+          <icon> UI pipeline run <pr_name> *<run_status>* <icon> <<logs_url>|logs> <failed_suites>
+    runAfter:
+      - release-ui-tests
+    taskRef:
+      name: send-slack-notification
+    when:
+      - input: $(params.SEND_SLACK_NOTIFICATION)
+        operator: in
+        values: ["true", "True"]
+    workspaces:
+      - name: results
+        workspace: data
+        subPath: results
+
+  finally:
+    - name: upload-artifacts-gcs
+      onError: continue
+      timeout: 10m
+      params:
+        - name: PIPELINE_RUN_NAME
+          value: $(context.pipelineRun.name)
+        - name: OPERATOR_VERSION
+          value: $(params.OPERATOR_VERSION)
+      taskRef:
+        name: upload-artifacts-gcs
+      workspaces:
+        - name: results
+          workspace: data
+          subPath: results
+
+    - name: destroy-cluster
+      onError: continue
+      timeout: 30m
+      params:
+        - name: CLUSTER_NAME
+          value: $(tasks.provision-cluster.results.cluster-name)
+        - name: KEEP_CLUSTER
+          value: $(params.KEEP_CLUSTER)
+      taskRef:
+        name: destroy-cluster
+
+    - name: cleanup-pipelinerun
+      onError: continue
+      timeout: 10m
+      params:
+        - name: PIPELINE_RUN
+          value: $(context.pipelineRun.name)
+        - name: DELETE_DELAY
+          value: "300"
+      taskRef:
+        name: cleanup-pipelinerun

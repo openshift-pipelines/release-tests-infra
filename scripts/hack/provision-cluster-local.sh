@@ -123,6 +123,10 @@ if [[ -z "${PULL_SECRET:-}" ]]; then
   done
   [[ -n "${PULL_SECRET:-}" ]] || die "PULL_SECRET required (set in env/.env or save to ~/.aws/pull-secret.txt)"
 fi
+# Bash strips " from unquoted JSON in .env (PULL_SECRET={...} → {auths:...}). Require real JSON.
+if ! printf '%s' "$PULL_SECRET" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>/dev/null; then
+  die "PULL_SECRET is not valid JSON (wrap the value in single quotes in your env file: PULL_SECRET='{\"auths\":...}')"
+fi
 
 # SSH key (FIPS only allows RSA or ECDSA, not ed25519)
 if [[ -z "${SSH_PUBLIC_KEY:-}" ]]; then

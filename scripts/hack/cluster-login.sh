@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 
+# UI env aliases (env.acceptance-ui.template): map API_URL / CONSOLE_* onto the
+# APISERVER / kubeadmin fields used by create-secrets / oc login.
+if [[ -z "${APISERVER:-}" && -n "${API_URL:-}" ]]; then
+  export APISERVER="$API_URL"
+fi
+if [[ -z "${KUBEADMIN_PASSWORD:-}" && -n "${CONSOLE_PASSWORD:-}" ]]; then
+  export KUBEADMIN_PASSWORD="$CONSOLE_PASSWORD"
+fi
+if [[ -z "${KUBEADMIN_USER:-}" && -n "${CONSOLE_USERNAME:-}" ]]; then
+  export KUBEADMIN_USER="$CONSOLE_USERNAME"
+fi
+
 is_existing_cluster() {
   case "$(printf '%s' "${INSTALLER:-none}" | tr '[:upper:]' '[:lower:]')" in
     none|cluster-platforms|cluster-platform|cp) return 0 ;; *) return 1 ;; esac
